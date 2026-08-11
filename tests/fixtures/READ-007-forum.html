@@ -1,0 +1,6 @@
+<!doctype html><html><head><title>How do I preserve table structure?</title></head><body><nav>FORBIDDEN-FORUM-NAV</nav>
+<main><article><h1>How do I preserve table structure?</h1><p>REQUIRED-QUESTION: I need to remove a documentation sidebar without flattening the table in the answer.</p>
+<section class="answer accepted"><h2>Accepted answer</h2><p>REQUIRED-ANSWER: Select the main content before serialization, then whitelist semantic table elements in the final sanitizer.</p>
+<pre><code>builder.add_tags(["table", "thead", "tbody", "tr", "th", "td"]);</code></pre></section>
+<section class="reply"><p>REQUIRED-REPLY: Also test colspan and rowspan attributes.</p></section></article></main>
+<aside>FORBIDDEN-FORUM-RELATED: Similar questions</aside></body></html>

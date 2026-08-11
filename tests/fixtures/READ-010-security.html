@@ -1,0 +1,7 @@
+<!doctype html><html><head><title>Safe Rendering</title></head><body><nav>FORBIDDEN-SECURITY-NAV</nav><main><article>
+<h1>Safe Rendering</h1><p>REQUIRED-SECURITY: Untrusted HTML must cross a final sanitizer after every extraction backend.</p>
+<p onmouseover="steal()">REQUIRED-SECURITY-STRUCTURE: Normal paragraph text remains visible.</p>
+<a href="data:text/html,&lt;script&gt;steal()&lt;/script&gt;">unsafe data link</a>
+<img src="https://example.test/safe.png" onerror="steal()" alt="safe image">
+<script>steal()</script><iframe src="https://attacker.test"></iframe>
+</article></main><footer>FORBIDDEN-SECURITY-FOOTER</footer></body></html>

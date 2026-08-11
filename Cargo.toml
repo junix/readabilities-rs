@@ -1,0 +1,63 @@
+[package]
+name = "readabilities-rs"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+description = "Local-first readable content extraction, cleanup, and explicit remote acquisition"
+repository = "https://github.com/junix/readabilities-rs"
+keywords = ["readability", "html", "content-extraction", "scraping"]
+categories = ["parser-implementations", "web-programming", "command-line-utilities"]
+
+[[bin]]
+name = "readabilities-rs"
+path = "src/main.rs"
+
+[[example]]
+name = "extraction_benchmark"
+path = "examples/extraction_benchmark.rs"
+required-features = ["http"]
+
+[features]
+default = ["http", "ensemble"]
+http = ["dep:futures-util", "dep:reqwest", "dep:tokio"]
+ensemble = ["dep:trafilatura"]
+providers = ["http", "dep:pulldown-cmark", "dep:secrecy"]
+browser = ["http", "dep:chromiumoxide"]
+
+[dependencies]
+ammonia = "4.1.4"
+clap = { version = "4.6.0", features = ["derive"] }
+decruft = "0.2.0"
+futures-util = { version = "0.3.31", optional = true }
+htmd = "0.5.5"
+markup5ever_rcdom = "0.38.0"
+pulldown-cmark = { version = "0.13.3", optional = true }
+reqwest = { version = "0.13.4", default-features = false, features = ["brotli", "deflate", "gzip", "json", "rustls", "stream"], optional = true }
+scraper = "0.26.0"
+secrecy = { version = "0.10.3", optional = true }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+sha2 = "0.10.9"
+thiserror = "2.0.18"
+tokio = { version = "1.48.0", features = ["macros", "net", "process", "rt-multi-thread", "time"], optional = true }
+trafilatura = { version = "0.3.0", optional = true }
+unicode-segmentation = "1.12.0"
+url = { version = "2.5.8", features = ["serde"] }
+chromiumoxide = { version = "0.9.1", optional = true }
+
+[dev-dependencies]
+tempfile = "3.23.0"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+too_many_lines = "allow"
+struct_excessive_bools = "allow"
