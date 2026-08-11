@@ -102,6 +102,11 @@ install:
     cargo build --release --locked --all-features
     mkdir -p "$install_dir"
     cp target/release/readabilities-rs "$install_dir/readabilities-rs"
+    # A copied linker-signed Mach-O can be rejected by macOS execution policy
+    # at a provenance-tracked destination. Re-sign the installed bytes in place.
+    if [[ "$os_name" == "macos" ]]; then
+      codesign --force --sign - "$install_dir/readabilities-rs"
+    fi
     echo "Installed $install_dir/readabilities-rs"
 
 # Generate coverage
