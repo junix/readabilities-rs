@@ -130,11 +130,11 @@ The local extractor and CLI still compile and test with
 
 The independent sibling project `readabilities-suite` invokes Defuddle,
 `readabilities-py`, and this binary through their real public surfaces and
-compares their actual Markdown. On the frozen 16-case corpus from 2026-08-11,
-Rust passed 16/16 with required-text recall 43/43, noise rejection 38/38,
-structure preservation 33/33, Markdown fidelity 70/70, fact ordering 14/14,
-metadata 19/19, and zero security violations. The report is in
-`../readabilities-suite/reports/offline.md`.
+compares their actual Markdown. Its 17 self-authored fixtures each carry a
+frozen output from the selected Python Trafilatura profile. Rust must match the
+Python status and retain at least 90% of the reference text (excluding
+fixture-declared noise), in addition to the suite's independent quality and
+security facts. The report is in `../readabilities-suite/reports/offline.md`.
 
 That is a bounded corpus claim, not a claim of universal superiority. The live
 8-page common-site report is intentionally non-gating because public pages
@@ -148,9 +148,9 @@ calling shorter or faster output better.
   MDN have declarative built-ins; external configurations and the no-match
   generic fallback have dedicated E2E fixtures. New site rules require a
   failing, self-authored fixture and may not compensate for a weaker default.
-- List pages such as Hacker News may produce more content than article-focused
-  extractors. Live reports expose the size difference; they do not call shorter
-  output better without a content oracle.
+- Defuddle treats link indexes such as a Hacker News front page as readable
+  content. Rust follows that Oracle behavior for `READ-017` and the live
+  snapshot comparison, while preserving its independent final sanitizer.
 - The local pure-Rust `html-to-markdown-rs` library was evaluated on the rich
   fixture with its table plugin enabled. It currently removes `<sup>` footnote
   structure, loses whitespace after an image, and emits an empty unsafe link;

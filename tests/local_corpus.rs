@@ -197,3 +197,16 @@ fn renderers_do_not_rerun_or_mutate_extraction() {
     assert!(text.contains("REQUIRED-DOC"));
     assert!(json.contains("\"schema_version\": 1"));
 }
+
+#[test]
+fn link_index_is_retained_when_the_oracle_treats_it_as_readable_content() {
+    let article = Reader::new()
+        .extract_html(&fixture("READ-017-link-index.html"), None)
+        .expect("the Defuddle-aligned link index should be extracted");
+    assert!(article.content.contains("A report on reliable extraction"));
+    assert!(
+        article
+            .content
+            .contains("A visual guide to distributed tracing")
+    );
+}
