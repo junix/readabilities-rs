@@ -40,7 +40,7 @@ pub(crate) async fn fetch_origin(
             )
             .with_retry(RetryAdvice::IncreaseBudget)
         })?
-        .map(|(html, final_url, lossy_decode)| AcquiredPage {
+        .map(|(html, final_url, encoding, decode_errors)| AcquiredPage {
             html,
             final_url,
             snapshot: SnapshotObservations::static_html(SnapshotKind::OriginResponse),
@@ -48,11 +48,16 @@ pub(crate) async fn fetch_origin(
                 stage: Stage::Acquire,
                 backend: Backend::Origin,
                 elapsed_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
-                detail: if lossy_decode {
-                    "origin HTML fetched within limits; invalid UTF-8 was lossily decoded"
-                        .to_string()
-                } else {
+                detail: if decode_errors {
+                    format!(
+                        "origin HTML fetched within limits; invalid {encoding} sequences were replaced"
+                    )
+                } else if encoding.eq_ignore_ascii_case("utf-8") {
                     "origin HTML fetched within redirect, byte, and deadline limits".to_string()
+                } else {
+                    format!(
+                        "origin HTML fetched within redirect, byte, and deadline limits; decoded as {encoding}"
+                    )
                 },
             },
         })
@@ -62,7 +67,7 @@ async fn fetch_loop(
     initial_url: &Url,
     policy: &UrlPolicy,
     cost: &mut CostLedger,
-) -> Result<(String, Url, bool)> {
+) -> Result<(String, Url, &'static str, bool)> {
     let initial_origin = origin(initial_url);
     let mut current = initial_url.clone();
     let mut redirects = 0_u8;
@@ -131,6 +136,11 @@ async fn fetch_loop(
         }
 
         map_status(response.status())?;
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .map(ToOwned::to_owned);
         if let Some(length) = response.content_length() {
             if usize::try_from(length).unwrap_or(usize::MAX) > policy.budget.max_download_bytes {
                 return Err(ReadError::new(
@@ -174,8 +184,8 @@ async fn fetch_loop(
             bytes.extend_from_slice(&chunk);
         }
         cost.downloaded_bytes = cost.downloaded_bytes.saturating_add(bytes.len());
-        let lossy = std::str::from_utf8(&bytes).is_err();
-        return Ok((String::from_utf8_lossy(&bytes).into_owned(), current, lossy));
+        let decoded = crate::charset::decode_html(content_type.as_deref(), &bytes);
+        return Ok((decoded.html, current, decoded.encoding, decoded.had_errors));
     }
 }
 

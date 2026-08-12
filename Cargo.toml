@@ -20,13 +20,14 @@ required-features = ["http"]
 
 [features]
 default = ["http", "ensemble"]
-http = ["dep:futures-util", "dep:reqwest", "dep:tokio"]
+http = ["dep:encoding_rs", "dep:futures-util", "dep:reqwest", "dep:tokio"]
 ensemble = []
 
 [dependencies]
 ammonia = "4.1.4"
 clap = { version = "4.6.0", features = ["derive"] }
 ego-tree = "0.11.0"
+encoding_rs = { version = "0.8.35", optional = true }
 futures-util = { version = "0.3.31", optional = true }
 htmd = "0.5.5"
 markup5ever_rcdom = "0.38.0"

@@ -1,0 +1,46 @@
+upstream:
+  path: /Users/junix/crawlberg
+  branch: main
+
+# Initial source-audit baseline. Future alignment runs inspect relevant changes
+# after this Crawlberg commit.
+baseline: "e855adfa5a22bef61ba747f3b56ad4fb27fe4b5b"
+
+scope_map:
+  "crates/crawlberg/src/html":
+    - src/native.rs
+    - src/charset.rs
+    - src/http.rs
+    - src/model.rs
+  "crates/crawlberg/src/markdown.rs":
+    - src/markdown.rs
+  "crates/crawlberg/src/pruning.rs":
+    - src/native.rs
+    - src/engine.rs
+  "crates/crawlberg/src/net":
+    - src/http.rs
+
+scope_filter:
+  include:
+    - crates/crawlberg/src/html
+    - crates/crawlberg/src/markdown.rs
+    - crates/crawlberg/src/pruning.rs
+    - crates/crawlberg/src/net
+  exclude:
+    - crates/crawlberg/src/api
+    - crates/crawlberg/src/engine
+    - crates/crawlberg/src/interact
+    - crates/crawlberg/src/mcp
+    - crates/crawlberg/src/research
+    - crates/crawlberg-browser
+    - crates/crawlberg-bypass
+    - crates/crawlberg-cli
+    - crates/crawlberg-ffi
+    - crates/crawlberg-jni
+    - crates/crawlberg-node
+    - crates/crawlberg-php
+    - crates/crawlberg-py
+    - crates/crawlberg-wasm
+    - packages
+    - e2e
+    - docs-site

@@ -47,6 +47,9 @@ implement a second pipeline.
    removal previews, and acquisition resource counts without logging secrets.
 7. Static HTML never claims observations such as computed styles, element
    geometry, executed JavaScript, or flattened shadow DOM.
+8. When the document declares a valid `<base href>`, it becomes the effective
+   base for returned content and normalized metadata URLs; resolving it never
+   performs network I/O.
 
 ## Input modes
 
@@ -75,6 +78,10 @@ layout hint, not an alternate pipeline: generic cleanup, normalization, and the
 final sanitizer still run. Medium, Wikipedia, and MDN are built in. Arbitrary
 rule-weight and sanitizer overrides are intentionally not public in v1.
 
+Normalized metadata uses explicit HTML head values first, then fills missing
+fields from article-like schema.org JSON-LD. Supporting JSON-LD arrays and
+`@graph` containers does not return scripts or bypass the final sanitizer.
+
 ## Quality semantics
 
 `QualityBand::{Strong, Usable, Weak}` is an evidence band, not a probability.
@@ -93,6 +100,11 @@ offset a failed quality fact.
 `Article` includes canonical HTML, metadata, word count, quality, warnings,
 and provenance. `Article::render` supports `Html`, `Markdown`, `Text`, and
 `Json`. Markdown is always derived from the same clean HTML.
+
+Origin acquisition decodes raw response bytes according to a declared HTTP
+charset, byte-order mark, or early HTML charset declaration before parsing.
+Absent a supported declaration it retains the prior UTF-8-with-replacement
+fallback.
 
 ## CLI surface
 

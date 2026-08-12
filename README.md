@@ -11,9 +11,12 @@ Chrome, a PaaS CLI, or another executable. HTML input never accesses the
 network. URL acquisition talks directly to the requested origin over HTTP; the
 crate never submits a URL or page content to a managed extraction provider.
 
-The native extraction pipeline uses the Defuddle source tree as its behavioral
-reference, but owns its Rust implementation and runtime. Defuddle, Python, and
-other engines are comparison oracles only.
+The native extraction pipeline uses the Defuddle source tree as its readability
+behavioral reference. Selected low-level parsing behaviors are also adapted
+from Crawlberg, including document-base resolution, JSON-LD metadata fallback,
+and raw-byte charset detection. The crate still owns its Rust implementation
+and runtime; these projects and other engines are references or comparison
+oracles only.
 
 ## Quick start
 
@@ -97,6 +100,17 @@ The library exposes `SiteConfig`, `parse_site_configs`,
 `Reader::without_site_configs`. A configuration chooses and cleans a known
 layout; it cannot bypass the general engine or the security boundary.
 
+## Metadata and document URLs
+
+Metadata is normalized from ordinary meta tags, Open Graph, Twitter Card,
+Dublin Core, and article-like schema.org JSON-LD. Explicit head metadata wins;
+JSON-LD fills missing fields. JSON-LD arrays and `@graph` containers are
+supported, with article-like nodes preferred over generic webpage/site nodes.
+
+When a base URL is supplied, the first valid `<base href>` is resolved against
+it and becomes the effective base for article links, images, `srcset`, canonical
+URLs, and metadata images. No URL is fetched during local HTML extraction.
+
 ## Backend routing
 
 | Need | Route | Network/data consequence |
@@ -108,7 +122,9 @@ layout; it cannot bypass the general engine or the security boundary.
 | Managed reader services | unsupported | Rust never submits URLs or content to extraction vendors |
 | External browser/Python/Node/PaaS CLI | unsupported | no subprocess launch path exists |
 
-Origin HTTP enforces an overall deadline, byte/request/redirect budgets,
+Origin HTTP decodes declared legacy encodings from response headers, byte-order
+marks, or an early HTML meta charset before extraction. It enforces an overall
+deadline, byte/request/redirect budgets,
 cross-origin redirect denial by default, and SSRF-resistant DNS validation and
 address pinning. Private, loopback, link-local, multicast, and documentation
 networks are denied unless the caller explicitly allows them.
@@ -131,8 +147,8 @@ The local extractor and CLI still compile and test with
 The independent sibling project `readabilities-suite` invokes Defuddle,
 `readabilities-py`, and this binary through their real public surfaces and
 compares their actual Markdown. Its 17 self-authored fixtures each carry a
-frozen output from the selected Python Trafilatura profile. Rust must match the
-Python status and retain at least 90% of the reference text (excluding
+frozen output from the selected Defuddle profile. Rust must match the selected
+Oracle status and retain at least 90% of the reference text (excluding
 fixture-declared noise), in addition to the suite's independent quality and
 security facts. The report is in `../readabilities-suite/reports/offline.md`.
 
@@ -156,6 +172,9 @@ calling shorter or faster output better.
   structure, loses whitespace after an image, and emits an empty unsafe link;
   `htmd` preserves the gated Markdown facts after the mandatory sanitizer, so
   v0.1 continues to use `htmd` directly as a Rust library.
+- Crawlberg's crawling, browser/WAF, whole-page discovery, robots traversal,
+  and Markdown-line pruning remain outside this crate. The detailed source
+  comparison and future review list live under `alignment/`.
 
 ## Development
 
@@ -171,4 +190,4 @@ and [BENCHMARK.md](BENCHMARK.md).
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

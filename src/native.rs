@@ -8,6 +8,7 @@ use std::collections::HashSet;
 
 use ego_tree::NodeId;
 use scraper::{ElementRef, Html, Node, Selector};
+use serde_json::{Map, Value};
 use unicode_segmentation::UnicodeSegmentation;
 use url::Url;
 
@@ -96,7 +97,9 @@ struct ContentCandidate {
 
 pub(crate) fn extract(html: &str, options: &NativeOptions<'_>) -> NativeResult {
     let mut document = Html::parse_document(html);
-    let metadata = extract_metadata(&document, options.base_url);
+    let effective_base = effective_base_url(&document, options.base_url);
+    let base_url = effective_base.as_ref().or(options.base_url);
+    let metadata = extract_metadata(&document, base_url);
     let root_id = find_content_root(&document, options.content_selector)
         .unwrap_or_else(|| document.root_element().id());
     let mut removals = Vec::new();
@@ -115,7 +118,7 @@ pub(crate) fn extract(html: &str, options: &NativeOptions<'_>) -> NativeResult {
             &mut removals,
         );
     }
-    resolve_relative_urls(&mut document, root_id, options.base_url);
+    resolve_relative_urls(&mut document, root_id, base_url);
 
     let content = document
         .tree
@@ -481,12 +484,24 @@ fn resolve_relative_urls(document: &mut Html, root_id: NodeId, base_url: Option<
     }
 }
 
+fn effective_base_url(document: &Html, fallback: Option<&Url>) -> Option<Url> {
+    let declared = select_first(document, "base[href]")
+        .and_then(|element| element.attr("href"))
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    declared
+        .and_then(|value| fallback.and_then(|base| base.join(value).ok()))
+        .or_else(|| declared.and_then(|value| Url::parse(value).ok()))
+        .or_else(|| fallback.cloned())
+}
+
 fn extract_metadata(document: &Html, base_url: Option<&Url>) -> Metadata {
     let title = meta_content(
         document,
         &[
             "meta[property=\"og:title\"]",
             "meta[name=\"twitter:title\"]",
+            "meta[name=\"dc.title\"]",
         ],
     )
     .or_else(|| selector_text(document, "title"));
@@ -496,6 +511,8 @@ fn extract_metadata(document: &Html, base_url: Option<&Url>) -> Metadata {
             "meta[name=\"author\"]",
             "meta[property=\"article:author\"]",
             "meta[name=\"byl\"]",
+            "meta[name=\"twitter:creator\"]",
+            "meta[name=\"dc.creator\"]",
         ],
     );
     let description = meta_content(
@@ -503,6 +520,8 @@ fn extract_metadata(document: &Html, base_url: Option<&Url>) -> Metadata {
         &[
             "meta[name=\"description\"]",
             "meta[property=\"og:description\"]",
+            "meta[name=\"twitter:description\"]",
+            "meta[name=\"dc.description\"]",
         ],
     );
     let published = meta_content(
@@ -511,6 +530,7 @@ fn extract_metadata(document: &Html, base_url: Option<&Url>) -> Metadata {
             "meta[property=\"article:published_time\"]",
             "meta[name=\"date\"]",
             "meta[name=\"pubdate\"]",
+            "meta[name=\"dc.date\"]",
         ],
     );
     let modified = meta_content(
@@ -525,13 +545,20 @@ fn extract_metadata(document: &Html, base_url: Option<&Url>) -> Metadata {
         &[
             "meta[property=\"og:site_name\"]",
             "meta[name=\"application-name\"]",
+            "meta[name=\"dc.publisher\"]",
         ],
     );
     let language = select_first(document, "html")
         .and_then(|element| element.attr("lang"))
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned);
+        .map(ToOwned::to_owned)
+        .or_else(|| {
+            meta_content(
+                document,
+                &["meta[name=\"dc.language\"]", "meta[property=\"og:locale\"]"],
+            )
+        });
     let image = meta_content(
         document,
         &[
@@ -542,17 +569,136 @@ fn extract_metadata(document: &Html, base_url: Option<&Url>) -> Metadata {
     .map(|value| resolve_url(&value, base_url));
     let canonical_url = select_first(document, "link[rel=\"canonical\"]")
         .and_then(|element| element.attr("href"))
-        .map(|value| resolve_url(value, base_url));
-    let keywords = meta_content(document, &["meta[name=\"keywords\"]"])
-        .map(|value| {
-            value
-                .split(',')
+        .map(|value| resolve_url(value, base_url))
+        .or_else(|| {
+            meta_content(
+                document,
+                &["meta[property=\"og:url\"]", "meta[name=\"dc.identifier\"]"],
+            )
+            .map(|value| resolve_url(&value, base_url))
+        });
+    let mut keywords = meta_contents(
+        document,
+        &[
+            "meta[name=\"keywords\"]",
+            "meta[property=\"article:tag\"]",
+            "meta[name=\"dc.subject\"]",
+        ],
+    )
+    .into_iter()
+    .flat_map(|value| {
+        value
+            .split(',')
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+            .collect::<Vec<_>>()
+    })
+    .collect::<Vec<_>>();
+    deduplicate(&mut keywords);
+
+    let mut metadata = Metadata {
+        title,
+        author,
+        description,
+        published,
+        modified,
+        site,
+        language,
+        image,
+        canonical_url,
+        keywords,
+    };
+    let json_ld = extract_json_ld_metadata(document, base_url);
+    merge_missing_metadata(&mut metadata, json_ld);
+    metadata
+}
+
+fn meta_content(document: &Html, selectors: &[&str]) -> Option<String> {
+    selectors.iter().find_map(|raw| {
+        select_first(document, raw)
+            .and_then(|element| element.attr("content"))
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+    })
+}
+
+fn meta_contents(document: &Html, selectors: &[&str]) -> Vec<String> {
+    let mut values = Vec::new();
+    for raw in selectors {
+        let Ok(selector) = Selector::parse(raw) else {
+            continue;
+        };
+        values.extend(
+            document
+                .select(&selector)
+                .filter_map(|element| element.attr("content"))
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
-                .map(ToOwned::to_owned)
-                .collect()
-        })
-        .unwrap_or_default();
+                .map(ToOwned::to_owned),
+        );
+    }
+    values
+}
+
+fn extract_json_ld_metadata(document: &Html, base_url: Option<&Url>) -> Metadata {
+    let Ok(selector) = Selector::parse("script[type=\"application/ld+json\"]") else {
+        return Metadata::default();
+    };
+    let mut candidates = Vec::new();
+    for element in document.select(&selector) {
+        if let Ok(value) = serde_json::from_str::<Value>(&element.inner_html()) {
+            collect_json_ld_candidates(&value, base_url, &mut candidates);
+        }
+    }
+    candidates.sort_by_key(|(priority, _)| std::cmp::Reverse(*priority));
+    let mut metadata = Metadata::default();
+    for (_, candidate) in candidates {
+        merge_missing_metadata(&mut metadata, candidate);
+    }
+    metadata
+}
+
+fn collect_json_ld_candidates(
+    value: &Value,
+    base_url: Option<&Url>,
+    candidates: &mut Vec<(u8, Metadata)>,
+) {
+    match value {
+        Value::Array(values) => {
+            for value in values {
+                collect_json_ld_candidates(value, base_url, candidates);
+            }
+        }
+        Value::Object(object) => {
+            if let Some(graph) = object.get("@graph") {
+                collect_json_ld_candidates(graph, base_url, candidates);
+            }
+            let metadata = metadata_from_json_ld_object(object, base_url);
+            if metadata != Metadata::default() {
+                candidates.push((json_ld_priority(object), metadata));
+            }
+        }
+        _ => {}
+    }
+}
+
+fn metadata_from_json_ld_object(object: &Map<String, Value>, base_url: Option<&Url>) -> Metadata {
+    let title = json_string(object.get("headline")).or_else(|| json_string(object.get("name")));
+    let author = json_names(object.get("author"));
+    let description = json_string(object.get("description"));
+    let published = json_string(object.get("datePublished"));
+    let modified = json_string(object.get("dateModified"));
+    let site = json_names(object.get("publisher")).or_else(|| json_names(object.get("isPartOf")));
+    let language = json_string(object.get("inLanguage"));
+    let image = json_url(object.get("image"), &["url", "contentUrl", "@id"])
+        .map(|value| resolve_url(&value, base_url));
+    let canonical_url = json_url(object.get("mainEntityOfPage"), &["@id", "url"])
+        .or_else(|| json_url(object.get("url"), &["@id", "url"]))
+        .map(|value| resolve_url(&value, base_url));
+    let mut keywords = json_keywords(object.get("keywords"));
+    deduplicate(&mut keywords);
 
     Metadata {
         title,
@@ -568,14 +714,121 @@ fn extract_metadata(document: &Html, base_url: Option<&Url>) -> Metadata {
     }
 }
 
-fn meta_content(document: &Html, selectors: &[&str]) -> Option<String> {
-    selectors.iter().find_map(|raw| {
-        select_first(document, raw)
-            .and_then(|element| element.attr("content"))
+fn json_ld_priority(object: &Map<String, Value>) -> u8 {
+    let types = match object.get("@type") {
+        Some(Value::String(value)) => vec![value.as_str()],
+        Some(Value::Array(values)) => values.iter().filter_map(Value::as_str).collect(),
+        _ => Vec::new(),
+    };
+    if types.iter().any(|value| {
+        ["article", "posting", "report", "review", "recipe"]
+            .iter()
+            .any(|kind| value.to_ascii_lowercase().contains(kind))
+    }) {
+        2
+    } else {
+        u8::from(
+            types
+                .iter()
+                .any(|value| value.eq_ignore_ascii_case("WebPage")),
+        )
+    }
+}
+
+fn json_string(value: Option<&Value>) -> Option<String> {
+    match value? {
+        Value::String(value) => nonempty(value),
+        Value::Object(object) => object
+            .get("name")
+            .or_else(|| object.get("@value"))
+            .and_then(|value| json_string(Some(value))),
+        Value::Array(values) => values.iter().find_map(|value| json_string(Some(value))),
+        _ => None,
+    }
+}
+
+fn json_names(value: Option<&Value>) -> Option<String> {
+    let values = match value? {
+        Value::Array(values) => values
+            .iter()
+            .filter_map(|value| json_string(Some(value)))
+            .collect::<Vec<_>>(),
+        value => json_string(Some(value)).into_iter().collect(),
+    };
+    (!values.is_empty()).then(|| values.join(", "))
+}
+
+fn json_url(value: Option<&Value>, object_keys: &[&str]) -> Option<String> {
+    match value? {
+        Value::String(value) => nonempty(value),
+        Value::Object(object) => object_keys
+            .iter()
+            .find_map(|key| json_string(object.get(*key))),
+        Value::Array(values) => values
+            .iter()
+            .find_map(|value| json_url(Some(value), object_keys)),
+        _ => None,
+    }
+}
+
+fn json_keywords(value: Option<&Value>) -> Vec<String> {
+    match value {
+        Some(Value::String(value)) => value
+            .split(',')
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(ToOwned::to_owned)
-    })
+            .collect(),
+        Some(Value::Array(values)) => values
+            .iter()
+            .filter_map(|value| json_string(Some(value)))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn nonempty(value: &str) -> Option<String> {
+    let value = value.trim();
+    (!value.is_empty()).then(|| value.to_string())
+}
+
+fn merge_missing_metadata(target: &mut Metadata, fallback: Metadata) {
+    if target.title.is_none() {
+        target.title = fallback.title;
+    }
+    if target.author.is_none() {
+        target.author = fallback.author;
+    }
+    if target.description.is_none() {
+        target.description = fallback.description;
+    }
+    if target.published.is_none() {
+        target.published = fallback.published;
+    }
+    if target.modified.is_none() {
+        target.modified = fallback.modified;
+    }
+    if target.site.is_none() {
+        target.site = fallback.site;
+    }
+    if target.language.is_none() {
+        target.language = fallback.language;
+    }
+    if target.image.is_none() {
+        target.image = fallback.image;
+    }
+    if target.canonical_url.is_none() {
+        target.canonical_url = fallback.canonical_url;
+    }
+    if target.keywords.is_empty() {
+        target.keywords = fallback.keywords;
+        deduplicate(&mut target.keywords);
+    }
+}
+
+fn deduplicate(values: &mut Vec<String>) {
+    let mut seen = HashSet::new();
+    values.retain(|value| seen.insert(value.to_ascii_lowercase()));
 }
 
 fn selector_text(document: &Html, raw: &str) -> Option<String> {
@@ -699,5 +952,96 @@ mod tests {
                 .content
                 .contains("https://example.test/posts/image.png")
         );
+    }
+
+    #[test]
+    fn document_base_and_json_ld_enrich_the_native_result() {
+        let base = Url::parse("https://example.test/posts/one").unwrap();
+        let html = r#"
+            <html><head><base href="/assets/">
+            <meta name="description" content="Explicit head description">
+            <script type="application/ld+json">{
+              "@context": "https://schema.org",
+              "@graph": [
+                {"@type": "WebSite", "name": "Fallback Site"},
+                {
+                  "@type": ["NewsArticle", "Report"],
+                  "headline": "Structured title",
+                  "author": [{"name": "Ada"}, {"name": "Lin"}],
+                  "description": "Structured description",
+                  "datePublished": "2026-08-12",
+                  "publisher": {"name": "Example Journal"},
+                  "image": {"url": "hero.jpg"},
+                  "mainEntityOfPage": {"@id": "story"},
+                  "keywords": ["rust", "readability"]
+                }
+              ]
+            }</script></head><body><article>
+              <p><a href="detail">detail</a><img src="image.png"></p>
+            </article></body></html>
+        "#;
+        let result = extract(
+            html,
+            &NativeOptions {
+                base_url: Some(&base),
+                content_selector: None,
+                include_images: true,
+                include_replies: true,
+                conservative: false,
+                aggressive: false,
+                diagnostics: false,
+            },
+        );
+
+        assert!(
+            result
+                .content
+                .contains("https://example.test/assets/detail")
+        );
+        assert!(
+            result
+                .content
+                .contains("https://example.test/assets/image.png")
+        );
+        assert_eq!(result.metadata.title.as_deref(), Some("Structured title"));
+        assert_eq!(result.metadata.author.as_deref(), Some("Ada, Lin"));
+        assert_eq!(
+            result.metadata.description.as_deref(),
+            Some("Explicit head description")
+        );
+        assert_eq!(result.metadata.site.as_deref(), Some("Example Journal"));
+        assert_eq!(
+            result.metadata.image.as_deref(),
+            Some("https://example.test/assets/hero.jpg")
+        );
+        assert_eq!(
+            result.metadata.canonical_url.as_deref(),
+            Some("https://example.test/assets/story")
+        );
+        assert_eq!(result.metadata.keywords, ["rust", "readability"]);
+    }
+
+    #[test]
+    fn explicit_head_metadata_precedes_json_ld_fallbacks() {
+        let result = extract(
+            r#"<html><head>
+              <meta name="keywords" content="head-topic, rust">
+              <script type="application/ld+json">{
+                "@type": "Article",
+                "keywords": ["json-topic", "rust"]
+              }</script>
+            </head><body><article><p>Enough article text for metadata extraction.</p></article></body></html>"#,
+            &NativeOptions {
+                base_url: None,
+                content_selector: None,
+                include_images: true,
+                include_replies: true,
+                conservative: false,
+                aggressive: false,
+                diagnostics: false,
+            },
+        );
+
+        assert_eq!(result.metadata.keywords, ["head-topic", "rust"]);
     }
 }

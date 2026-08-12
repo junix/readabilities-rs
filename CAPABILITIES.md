@@ -11,11 +11,14 @@ explicit policy, and `unsupported` is rejected rather than silently emulated.
 | Generic no-config fallback | yes | yes | required | unconfigured E2E case |
 | Built-in site configuration | Medium/Wikipedia/MDN | automatic | required when matched | provenance + site E2E facts |
 | External declarative site configuration | yes | `--site-config` | optional | validated selector/config case |
-| Metadata/schema.org | yes | yes | required | typed metadata |
+| Normalized head metadata | HTML/OG/Twitter/DC | yes | required | typed metadata precedence |
+| schema.org JSON-LD metadata fallback | arrays + `@graph` | yes | required | article-node preference tests |
+| `<base href>` URL resolution | yes | yes | required with base URL | content + metadata URL tests |
 | Final HTML sanitizer | yes | yes | required, cannot disable | security facts |
 | Clean HTML | yes | yes | required | canonical article HTML |
 | Derived Markdown/text | yes | yes | required | native Markdown E2E facts + render provenance |
 | Origin HTTP | `http` feature | `read` | required in default build | redirects/bytes/timing |
+| Legacy HTML charset decoding | `http` feature | `read` | required when declared | header/BOM/meta raw-byte tests |
 | Native ensemble | `ensemble` feature | `--mode ensemble` | optional | candidate comparison |
 | Managed extraction providers | unsupported | unsupported | no | absent from API and CLI |
 | Python/Node subprocess extraction | unsupported | unsupported | no | rejected policy |

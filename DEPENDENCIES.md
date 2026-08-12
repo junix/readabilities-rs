@@ -17,6 +17,7 @@ vulnerabilities reported).
 | Direct dependency | Resolved | License | Role |
 |---|---:|---|---|
 | `ego-tree` | 0.11.0 | ISC | mutable DOM node identity and traversal used by the native extractor |
+| `encoding_rs` | 0.8.35 | (Apache-2.0 OR MIT) AND BSD-3-Clause | optional HTTP response character decoding before DOM parsing |
 | `ammonia` | 4.1.4 | MIT OR Apache-2.0 | mandatory final sanitizer |
 | `htmd` | 0.5.5 | Apache-2.0 | post-extraction Markdown rendering |
 | `markup5ever_rcdom` | 0.38.0 | MIT OR Apache-2.0 | semantic Markdown handlers for code, math, and footnotes |
@@ -30,6 +31,9 @@ Python remain black-box comparison participants in the independent suite and
 are not runtime dependencies. No feature launches Chrome, Python, Node, or a
 PaaS CLI. The local pure-Rust `html-to-markdown-rs` project was behaviorally
 evaluated but is not a dependency in v0.1; see README “Known divergences.”
+Selected small parsing behaviors were adapted from Crawlberg under MIT; it is
+also not a dependency. See `THIRD_PARTY_NOTICES.md` and `alignment/` for the
+source snapshot, attribution, scope map, and intentional divergences.
 
 The native-only guarantee here is about document acquisition, extraction, and
 rendering: no external process or non-Rust content engine is invoked. It is not

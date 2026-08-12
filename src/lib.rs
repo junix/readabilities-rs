@@ -4,6 +4,8 @@
 //! and text are renderings of that canonical article, never inputs to content
 //! selection.
 
+#[cfg(feature = "http")]
+mod charset;
 mod engine;
 mod error;
 #[cfg(feature = "http")]
