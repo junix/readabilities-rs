@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand, ValueEnum};
 #[cfg(feature = "http")]
-use readabilities_rs::{Acquisition, ExecutionOutcome, ReadRequest, UrlPolicy};
+use readabilities_rs::{ExecutionOutcome, ReadRequest, UrlPolicy};
 use readabilities_rs::{
     ExtractionMode, ExtractionOptions, OutputFormat, ReadError, Reader, SiteConfig, VERSION,
     parse_site_configs,
@@ -69,10 +69,6 @@ enum Command {
         mode: CliMode,
         #[arg(long)]
         debug: bool,
-        #[arg(long, conflicts_with = "provider")]
-        browser: bool,
-        #[arg(long, value_enum, conflicts_with = "browser")]
-        provider: Option<CliProvider>,
         /// Load one or more declarative site configurations from JSON.
         #[arg(
             long = "site-config",
@@ -134,13 +130,6 @@ impl From<CliMode> for ExtractionMode {
     }
 }
 
-#[derive(Debug, Clone, Copy, ValueEnum)]
-enum CliProvider {
-    Jina,
-    Firecrawl,
-    Yxt,
-}
-
 #[derive(Debug, Serialize)]
 struct DoctorReport {
     schema_version: u32,
@@ -149,8 +138,7 @@ struct DoctorReport {
     http: bool,
     ensemble: bool,
     providers: bool,
-    browser: bool,
-    browser_executable: Option<String>,
+    external_processes: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -227,21 +215,12 @@ async fn run_async(cli: Cli) -> i32 {
             json,
             mode,
             debug,
-            browser,
-            provider,
             site_configs,
             no_site_configs,
         } => {
             let mut extraction = extraction_options(mode, false, false);
             extraction.diagnostics = debug;
-            let mut policy = UrlPolicy::default();
-            match configure_acquisition(&mut policy, browser, provider) {
-                Ok(()) => {}
-                Err(message) => {
-                    eprintln!("{message}");
-                    return 2;
-                }
-            }
+            let policy = UrlPolicy::default();
             let reader = match make_reader(extraction.clone(), &site_configs, no_site_configs) {
                 Ok(reader) => reader,
                 Err(message) => {
@@ -357,68 +336,6 @@ fn make_reader(
     }
 }
 
-#[cfg(feature = "http")]
-fn configure_acquisition(
-    policy: &mut UrlPolicy,
-    browser: bool,
-    provider: Option<CliProvider>,
-) -> Result<(), String> {
-    if browser {
-        #[cfg(feature = "browser")]
-        {
-            policy.acquisition = Acquisition::Browser(readabilities_rs::BrowserPolicy::default());
-            return Ok(());
-        }
-        #[cfg(not(feature = "browser"))]
-        return Err("--browser requires a build with the `browser` feature".to_string());
-    }
-
-    let Some(provider) = provider else {
-        policy.acquisition = Acquisition::Origin;
-        return Ok(());
-    };
-    #[cfg(feature = "providers")]
-    {
-        use readabilities_rs::{FirecrawlConfig, JinaConfig, ManagedProvider, YxtConfig};
-        use secrecy::SecretString;
-        use std::time::Duration;
-
-        policy.acquisition = Acquisition::Managed(match provider {
-            CliProvider::Jina => {
-                let config = JinaConfig {
-                    api_key: std::env::var("JINA_API_KEY").ok().map(SecretString::from),
-                    ..JinaConfig::default()
-                };
-                ManagedProvider::Jina(config)
-            }
-            CliProvider::Firecrawl => {
-                let key = std::env::var("FIRECRAWL_API_KEY")
-                    .map_err(|_| "FIRECRAWL_API_KEY is required".to_string())?;
-                ManagedProvider::Firecrawl(FirecrawlConfig::new(SecretString::from(key)))
-            }
-            CliProvider::Yxt => {
-                let endpoint = std::env::var("YXT_ENDPOINT")
-                    .map_err(|_| "YXT_ENDPOINT is required".to_string())?;
-                let authorization = std::env::var("YXT_AUTHORIZATION")
-                    .map_err(|_| "YXT_AUTHORIZATION is required".to_string())?;
-                ManagedProvider::Yxt(YxtConfig {
-                    endpoint: Url::parse(&endpoint)
-                        .map_err(|error| format!("invalid YXT_ENDPOINT: {error}"))?,
-                    authorization: SecretString::from(authorization),
-                    client: std::env::var("YXT_CLIENT").unwrap_or_else(|_| "AI_DIGGER".to_string()),
-                    poll_interval: Duration::from_secs(10),
-                })
-            }
-        });
-        Ok(())
-    }
-    #[cfg(not(feature = "providers"))]
-    {
-        let _ = provider;
-        Err("--provider requires a build with the `providers` feature".to_string())
-    }
-}
-
 fn read_input(path: &PathBuf) -> io::Result<String> {
     if path.as_os_str() == "-" {
         let mut input = String::new();
@@ -472,9 +389,8 @@ fn print_doctor(json: bool) -> i32 {
         core: true,
         http: cfg!(feature = "http"),
         ensemble: cfg!(feature = "ensemble"),
-        providers: cfg!(feature = "providers"),
-        browser: cfg!(feature = "browser"),
-        browser_executable: find_browser_executable(),
+        providers: false,
+        external_processes: false,
     };
     if json {
         println!(
@@ -487,11 +403,7 @@ fn print_doctor(json: bool) -> i32 {
         println!("http: {}", report.http);
         println!("ensemble: {}", report.ensemble);
         println!("providers: {}", report.providers);
-        println!("browser feature: {}", report.browser);
-        println!(
-            "browser executable: {}",
-            report.browser_executable.as_deref().unwrap_or("not found")
-        );
+        println!("external processes: {}", report.external_processes);
     }
     0
 }
@@ -508,19 +420,4 @@ fn print_version(json: bool) -> i32 {
         println!("readabilities-rs {VERSION}");
     }
     0
-}
-
-fn find_browser_executable() -> Option<String> {
-    let candidates = [
-        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-        "/Applications/Chromium.app/Contents/MacOS/Chromium",
-        "/usr/bin/google-chrome",
-        "/usr/bin/chromium",
-        "/usr/bin/chromium-browser",
-    ];
-    candidates
-        .iter()
-        .map(PathBuf::from)
-        .find(|path| path.is_file())
-        .map(|path| path.display().to_string())
 }

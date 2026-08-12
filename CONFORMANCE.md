@@ -73,9 +73,10 @@ reports list the cases won by each implementation.
   every mandatory participant must run and cannot become green through SKIP.
 - `live`: fetches current public pages once, records capture metadata, and
   compares the resulting common snapshot. Discovery only, never a release gate.
-- `browser`: requires an installed browser and the Rust `browser` capability.
-- `remote`: requires explicit provider credentials and reports billable
-  submissions separately.
+
+Managed extraction-provider profiles are intentionally outside the Rust
+contract. External engines may be comparison participants, but never a runtime
+dependency or fallback of `readabilities-rs`.
 
 ## Failure proof
 

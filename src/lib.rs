@@ -10,14 +10,10 @@ mod error;
 mod http;
 mod markdown;
 mod model;
-#[cfg(feature = "providers")]
-mod providers;
+mod native;
 mod reader;
 mod sanitize;
 mod site;
-
-#[cfg(feature = "browser")]
-mod browser;
 
 pub use error::{ErrorKind, ReadError, Result, RetryAdvice};
 pub use model::*;

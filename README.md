@@ -6,9 +6,14 @@ preserve meaningful structure, and enforce a final HTML security boundary.
 Markdown and text are renderings of that cleaned article; they are not used to
 decide what the article is.
 
-The default build is native Rust and does not require Python or Node. HTML input
-never accesses the network. URL acquisition uses origin HTTP by default;
-browser and managed readers are opt-in Cargo features and policies.
+Every build uses the native Rust pipeline and does not require Python, Node,
+Chrome, a PaaS CLI, or another executable. HTML input never accesses the
+network. URL acquisition talks directly to the requested origin over HTTP; the
+crate never submits a URL or page content to a managed extraction provider.
+
+The native extraction pipeline uses the Defuddle source tree as its behavioral
+reference, but owns its Rust implementation and runtime. Defuddle, Python, and
+other engines are comparison oracles only.
 
 ## Quick start
 
@@ -53,7 +58,8 @@ let markdown = article.render(OutputFormat::Markdown)?;
 
 Advanced callers use `ReadRequest` and `Reader::execute` to receive the single
 structured execution model. `UrlPolicy::fallbacks` is ordered and explicit;
-the library never invents a browser or third-party fallback.
+the only supported acquisition backend is direct origin HTTP, and there is no
+third-party reader route.
 
 ## Site configurations
 
@@ -97,27 +103,25 @@ layout; it cannot bypass the general engine or the security boundary.
 |---|---|---|
 | Already have HTML | `extract_html` / `extract` | Offline |
 | Ordinary server-rendered URL | origin `read_url` / `read` | Origin only |
-| Page requires JavaScript | `browser` feature + explicit `BrowserPolicy` | Local Chrome visits origin |
-| Independent extraction candidate | `ExtractionMode::Ensemble` | Offline Trafilatura candidate |
-| Jina, Firecrawl, or YXT | `providers` feature + explicit `ManagedProvider` | Page URL/data goes to named third party; submission is recorded as billable/unknown cost |
+| Page requires JavaScript execution | unsupported | supply already-rendered HTML explicitly |
+| Native strategy comparison | `ExtractionMode::Ensemble` | Offline Balanced, Conservative, and Aggressive Rust candidates |
+| Managed reader services | unsupported | Rust never submits URLs or content to extraction vendors |
+| External browser/Python/Node/PaaS CLI | unsupported | no subprocess launch path exists |
 
 Origin HTTP enforces an overall deadline, byte/request/redirect budgets,
 cross-origin redirect denial by default, and SSRF-resistant DNS validation and
 address pinning. Private, loopback, link-local, multicast, and documentation
 networks are denied unless the caller explicitly allows them.
 
-Every backend converges on the same local extraction and mandatory Ammonia
-sanitizer. Managed Markdown is first converted to HTML, marked as native
-Markdown provenance, then cleaned and sanitized locally.
+Every acquisition path converges on the same local extraction and mandatory
+Ammonia sanitizer.
 
 ## Cargo features
 
 | Feature | Default | Capability |
 |---|---:|---|
 | `http` | yes | bounded origin acquisition and async execution |
-| `ensemble` | yes | compare the local Decruft and Rust Trafilatura candidates |
-| `browser` | no | Chromium live-DOM acquisition |
-| `providers` | no | typed Jina, Firecrawl v2, and YXT adapters |
+| `ensemble` | yes | compare native Balanced, Conservative, and Aggressive candidates |
 
 The local extractor and CLI still compile and test with
 `--no-default-features`.
@@ -140,20 +144,18 @@ calling shorter or faster output better.
 
 ## Known divergences
 
-- Browser snapshots record that JavaScript ran, but v0.1 does not claim
-  computed-style, element-geometry, or flattened-shadow-DOM observations.
 - Full Defuddle site-extractor parity is not claimed. Medium, Wikipedia, and
   MDN have declarative built-ins; external configurations and the no-match
   generic fallback have dedicated E2E fixtures. New site rules require a
   failing, self-authored fixture and may not compensate for a weaker default.
-- Remote Markdown cannot reconstruct the provider's source DOM. Provenance
-  reports this instead of pretending it is equivalent to origin HTML.
 - List pages such as Hacker News may produce more content than article-focused
   extractors. Live reports expose the size difference; they do not call shorter
   output better without a content oracle.
-- `html-to-markdown-rs` was evaluated on the rich fixture. Its default CLI lost
-  table structure and emitted an empty unsafe link, while `htmd` preserved the
-  table after the mandatory sanitizer, so v0.1 uses `htmd` for rendering.
+- The local pure-Rust `html-to-markdown-rs` library was evaluated on the rich
+  fixture with its table plugin enabled. It currently removes `<sup>` footnote
+  structure, loses whitespace after an image, and emits an empty unsafe link;
+  `htmd` preserves the gated Markdown facts after the mandatory sanitizer, so
+  v0.1 continues to use `htmd` directly as a Rust library.
 
 ## Development
 

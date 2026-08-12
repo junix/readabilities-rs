@@ -17,7 +17,6 @@ struct AcquiredInput {
     final_url: Url,
     backend: Backend,
     snapshot: SnapshotObservations,
-    markdown_native: bool,
     metadata: Metadata,
     stage: StageRecord,
 }
@@ -77,7 +76,6 @@ impl Reader {
             &self.defaults,
             Backend::Local,
             SnapshotObservations::static_html(SnapshotKind::CallerHtml),
-            false,
             &self.site_configs,
         )
         .map(|result| result.article)
@@ -111,7 +109,6 @@ impl Reader {
                 &request.extraction,
                 Backend::Local,
                 SnapshotObservations::static_html(SnapshotKind::CallerHtml),
-                false,
                 &self.site_configs,
             ) {
                 Ok(local) => Execution {
@@ -240,7 +237,6 @@ impl Reader {
                 &extraction,
                 acquired.backend,
                 acquired.snapshot,
-                acquired.markdown_native,
                 &self.site_configs,
             );
             match extracted {
@@ -292,36 +288,36 @@ impl Reader {
 }
 
 #[cfg(feature = "http")]
-fn merge_missing_metadata(target: &mut crate::Metadata, provider: crate::Metadata) {
+fn merge_missing_metadata(target: &mut crate::Metadata, acquired: crate::Metadata) {
     if target.title.is_none() {
-        target.title = provider.title;
+        target.title = acquired.title;
     }
     if target.author.is_none() {
-        target.author = provider.author;
+        target.author = acquired.author;
     }
     if target.description.is_none() {
-        target.description = provider.description;
+        target.description = acquired.description;
     }
     if target.published.is_none() {
-        target.published = provider.published;
+        target.published = acquired.published;
     }
     if target.modified.is_none() {
-        target.modified = provider.modified;
+        target.modified = acquired.modified;
     }
     if target.site.is_none() {
-        target.site = provider.site;
+        target.site = acquired.site;
     }
     if target.language.is_none() {
-        target.language = provider.language;
+        target.language = acquired.language;
     }
     if target.image.is_none() {
-        target.image = provider.image;
+        target.image = acquired.image;
     }
     if target.canonical_url.is_none() {
-        target.canonical_url = provider.canonical_url;
+        target.canonical_url = acquired.canonical_url;
     }
     if target.keywords.is_empty() {
-        target.keywords = provider.keywords;
+        target.keywords = acquired.keywords;
     }
 }
 
@@ -340,43 +336,8 @@ async fn acquire(
                 final_url: acquired.final_url,
                 backend: Backend::Origin,
                 snapshot: acquired.snapshot,
-                markdown_native: false,
                 metadata: Metadata::default(),
                 stage: acquired.stage,
-            })
-        }
-        #[cfg(feature = "browser")]
-        Acquisition::Browser(browser_policy) => {
-            let acquired = crate::browser::fetch(
-                url,
-                &browser_policy,
-                &policy.budget,
-                policy.allow_private_networks,
-                cost,
-            )
-            .await?;
-            Ok(AcquiredInput {
-                html: acquired.html,
-                final_url: acquired.final_url,
-                backend: Backend::Browser,
-                snapshot: acquired.snapshot,
-                markdown_native: false,
-                metadata: Metadata::default(),
-                stage: acquired.stage,
-            })
-        }
-        #[cfg(feature = "providers")]
-        Acquisition::Managed(provider) => {
-            crate::http::validate_network_target(url, policy.allow_private_networks).await?;
-            let managed = crate::providers::read(url, provider, &policy.budget, cost).await?;
-            Ok(AcquiredInput {
-                html: managed.html,
-                final_url: url.clone(),
-                backend: managed.backend,
-                snapshot: managed.snapshot,
-                markdown_native: managed.markdown_native,
-                metadata: managed.metadata,
-                stage: managed.stage,
             })
         }
     }
@@ -386,14 +347,6 @@ async fn acquire(
 fn acquisition_backend(acquisition: &Acquisition) -> Backend {
     match acquisition {
         Acquisition::Origin => Backend::Origin,
-        #[cfg(feature = "browser")]
-        Acquisition::Browser(_) => Backend::Browser,
-        #[cfg(feature = "providers")]
-        Acquisition::Managed(provider) => match provider {
-            crate::ManagedProvider::Jina(_) => Backend::Jina,
-            crate::ManagedProvider::Firecrawl(_) => Backend::Firecrawl,
-            crate::ManagedProvider::Yxt(_) => Backend::Yxt,
-        },
     }
 }
 

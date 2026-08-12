@@ -36,7 +36,6 @@ pub(crate) fn extract(
     options: &ExtractionOptions,
     backend: Backend,
     snapshot: SnapshotObservations,
-    markdown_native: bool,
     site_configs: &[SiteConfig],
 ) -> Result<LocalExtraction> {
     let validate_started = Instant::now();
@@ -70,12 +69,20 @@ pub(crate) fn extract(
     };
     let content_selector = matched_site.and_then(|config| config.content_selector.as_deref());
 
+    if options.mode == ExtractionMode::Ensemble {
+        #[cfg(not(feature = "ensemble"))]
+        return Err(crate::model::unsupported_feature(
+            "ensemble",
+            Backend::Local,
+        ));
+    }
+
     let primary_mode = match options.mode {
         ExtractionMode::Ensemble => ExtractionMode::Balanced,
         mode => mode,
     };
     let mut candidates = Vec::new();
-    let primary = run_decruft(
+    let primary = run_native(
         &prepared_html,
         base_url,
         options,
@@ -86,24 +93,28 @@ pub(crate) fn extract(
         primary.signals.text_chars < 240 || matches!(primary.signals_band(), QualityBand::Weak);
     candidates.push(primary);
 
-    if primary_is_weak && primary_mode != ExtractionMode::Conservative {
-        candidates.push(run_decruft(
+    if options.mode == ExtractionMode::Ensemble {
+        candidates.push(run_native(
             &prepared_html,
             base_url,
             options,
             ExtractionMode::Conservative,
             content_selector,
         ));
-    }
-
-    if options.mode == ExtractionMode::Ensemble {
-        #[cfg(feature = "ensemble")]
-        candidates.push(run_trafilatura(&prepared_html, base_url, options));
-
-        #[cfg(not(feature = "ensemble"))]
-        return Err(crate::model::unsupported_feature(
-            "ensemble",
-            Backend::Local,
+        candidates.push(run_native(
+            &prepared_html,
+            base_url,
+            options,
+            ExtractionMode::Aggressive,
+            content_selector,
+        ));
+    } else if primary_is_weak && primary_mode != ExtractionMode::Conservative {
+        candidates.push(run_native(
+            &prepared_html,
+            base_url,
+            options,
+            ExtractionMode::Conservative,
+            content_selector,
         ));
     }
 
@@ -122,10 +133,9 @@ pub(crate) fn extract(
         })
         .collect::<Vec<_>>();
     let selected = candidates.swap_remove(selected_index);
-    let selected_via_fallback =
-        selected.engine != "decruft" || selected.mode != primary_mode || selected_index != 0;
+    let selected_via_fallback = selected.mode != primary_mode || selected_index != 0;
 
-    let text = decruft::strip_html_tags(&selected.html);
+    let text = crate::native::strip_html_tags(&selected.html);
     let text_chars = text
         .chars()
         .filter(|character| !character.is_whitespace())
@@ -203,7 +213,6 @@ pub(crate) fn extract(
             source_url: base_url.map(ToString::to_string),
             snapshot,
             degraded: selected_via_fallback,
-            markdown_native,
         },
         warnings,
     };
@@ -222,7 +231,7 @@ impl Candidate {
     }
 }
 
-fn run_decruft(
+fn run_native(
     html: &str,
     base_url: Option<&Url>,
     options: &ExtractionOptions,
@@ -230,145 +239,53 @@ fn run_decruft(
     content_selector: Option<&str>,
 ) -> Candidate {
     let started = Instant::now();
-    let mut decruft_options = decruft::DecruftOptions::default();
-    decruft_options.url = base_url.map(ToString::to_string);
-    decruft_options.debug = options.diagnostics;
-    decruft_options.remove_images = !options.include_images;
-    decruft_options.include_replies = options.include_replies;
-    decruft_options.allow_network = false;
-    decruft_options.content_selector = content_selector.map(ToOwned::to_owned);
-
-    match mode {
-        ExtractionMode::Balanced | ExtractionMode::Ensemble => {}
-        ExtractionMode::Conservative => {
-            decruft_options.remove_low_scoring = false;
-            decruft_options.remove_partial_selectors = false;
-            decruft_options.remove_content_patterns = false;
-        }
-        ExtractionMode::Aggressive => {
-            decruft_options.include_replies = false;
-            decruft_options.remove_small_images = true;
-        }
-    }
-
-    let result = decruft::parse(html, &decruft_options);
+    let native_options = crate::native::NativeOptions {
+        base_url,
+        content_selector,
+        include_images: options.include_images,
+        include_replies: options.include_replies && mode != ExtractionMode::Aggressive,
+        conservative: mode == ExtractionMode::Conservative,
+        aggressive: mode == ExtractionMode::Aggressive,
+        diagnostics: options.diagnostics,
+    };
+    let result = crate::native::extract(html, &native_options);
     let sanitized = sanitize::clean(&result.content);
-    let removals = result
-        .debug
-        .as_ref()
-        .map(|debug| {
-            debug
-                .removals
-                .iter()
-                .take(200)
-                .map(|removal| RemovalRecord {
-                    step: removal.step.clone(),
-                    selector: removal.selector.clone(),
-                    reason: removal.reason.clone(),
-                    preview: bounded_preview(&removal.text, 200),
-                })
-                .collect()
-        })
-        .unwrap_or_default();
 
     Candidate {
         signals: analyze(&sanitized),
         html: sanitized,
         metadata: Metadata {
-            title: result.title,
-            author: result.author,
-            description: result.description,
-            published: result.published,
-            modified: result.modified,
-            site: result.site,
-            language: result.language,
-            image: result.image,
-            canonical_url: result.canonical_url,
-            keywords: result.keywords,
+            title: result.metadata.title,
+            author: result.metadata.author,
+            description: result.metadata.description,
+            published: result.metadata.published,
+            modified: result.metadata.modified,
+            site: result.metadata.site,
+            language: result.metadata.language,
+            image: result.metadata.image,
+            canonical_url: result.metadata.canonical_url,
+            keywords: result.metadata.keywords,
         },
-        engine: "decruft".to_string(),
-        site_extractor: result.extractor_type,
-        removals,
+        engine: "readabilities-rs".to_string(),
+        site_extractor: None,
+        removals: result.removals,
         elapsed_ms: elapsed_ms(started),
         mode,
     }
 }
 
-#[cfg(feature = "ensemble")]
-fn run_trafilatura(html: &str, base_url: Option<&Url>, options: &ExtractionOptions) -> Candidate {
-    let started = Instant::now();
-    let mut trafilatura_options = trafilatura::Options::default()
-        .with_fallback(true)
-        .with_links(true)
-        .with_images(options.include_images)
-        .with_exclude_comments(!options.include_replies);
-    if let Some(url) = base_url {
-        trafilatura_options = trafilatura_options.with_url(url.clone());
-    }
-    let result = trafilatura::extract(html, &trafilatura_options);
-    match result {
-        Ok(result) => {
-            let sanitized = sanitize::clean(&result.content_html);
-            Candidate {
-                signals: analyze(&sanitized),
-                html: sanitized,
-                metadata: Metadata {
-                    title: non_empty(result.metadata.title),
-                    author: non_empty(result.metadata.author),
-                    description: non_empty(result.metadata.description),
-                    published: result.metadata.date.map(|date| date.to_string()),
-                    modified: None,
-                    site: non_empty(result.metadata.sitename),
-                    language: non_empty(result.metadata.language),
-                    image: non_empty(result.metadata.image),
-                    canonical_url: non_empty(result.metadata.url),
-                    keywords: result.metadata.tags,
-                },
-                engine: "trafilatura-rs".to_string(),
-                site_extractor: None,
-                removals: Vec::new(),
-                elapsed_ms: elapsed_ms(started),
-                mode: ExtractionMode::Ensemble,
-            }
-        }
-        Err(error) => Candidate {
-            html: String::new(),
-            metadata: Metadata::default(),
-            signals: analyze(""),
-            engine: "trafilatura-rs".to_string(),
-            site_extractor: None,
-            removals: Vec::new(),
-            elapsed_ms: elapsed_ms(started),
-            mode: ExtractionMode::Ensemble,
-        }
-        .with_failure_penalty(error.to_string()),
-    }
-}
-
-#[cfg(feature = "ensemble")]
-impl Candidate {
-    fn with_failure_penalty(mut self, _message: String) -> Self {
-        self.signals.score = i32::MIN / 2;
-        self
-    }
-}
-
 fn select_candidate(candidates: &[Candidate]) -> usize {
-    let primary = &candidates[0];
-    let primary_band = primary.signals_band();
-    if primary_band != QualityBand::Weak {
-        return 0;
+    let mut selected = 0;
+    for (index, candidate) in candidates.iter().enumerate().skip(1) {
+        if candidate.signals.score > candidates[selected].signals.score {
+            selected = index;
+        }
     }
-
-    candidates
-        .iter()
-        .enumerate()
-        .max_by_key(|(_, candidate)| candidate.signals.score)
-        .map_or(0, |(index, _)| index)
+    selected
 }
 
 pub(crate) fn analyze(html: &str) -> QualitySignals {
-    let text = decruft::strip_html_tags(html);
+    let text = crate::native::strip_html_tags(html);
     let words = count_words(&text);
     let text_chars = text
         .chars()
@@ -443,17 +360,8 @@ fn count_words(text: &str) -> usize {
     unicode_words.max(cjk_chars)
 }
 
-#[cfg(feature = "ensemble")]
-fn non_empty(value: String) -> Option<String> {
-    (!value.trim().is_empty()).then_some(value)
-}
-
 fn elapsed_ms(started: Instant) -> u64 {
     u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
-}
-
-fn bounded_preview(value: &str, max_chars: usize) -> String {
-    value.chars().take(max_chars).collect()
 }
 
 #[cfg(test)]
@@ -478,7 +386,6 @@ mod tests {
             &ExtractionOptions::default(),
             Backend::Local,
             SnapshotObservations::static_html(crate::SnapshotKind::CallerHtml),
-            false,
             &[],
         )
         .unwrap();
@@ -495,5 +402,86 @@ mod tests {
         let signals =
             analyze("<p>这是一个足够清晰的中文正文段落，用于验证中文字符不会被计算为零。</p>");
         assert!(signals.words > 10);
+    }
+
+    fn candidate_with_score(mode: ExtractionMode, score: i32, text_chars: usize) -> Candidate {
+        Candidate {
+            html: "<p>candidate</p>".to_string(),
+            metadata: Metadata::default(),
+            signals: QualitySignals {
+                words: 20,
+                text_chars,
+                paragraphs: 1,
+                headings: 0,
+                links: 0,
+                code_blocks: 0,
+                tables: 0,
+                score,
+            },
+            engine: "readabilities-rs".to_string(),
+            site_extractor: None,
+            removals: Vec::new(),
+            elapsed_ms: 0,
+            mode,
+        }
+    }
+
+    #[test]
+    fn short_usable_primary_can_lose_to_stronger_native_fallback() {
+        let candidates = [
+            candidate_with_score(ExtractionMode::Balanced, 10, 100),
+            candidate_with_score(ExtractionMode::Conservative, 20, 180),
+        ];
+
+        assert_eq!(candidates[0].signals_band(), QualityBand::Usable);
+        assert_eq!(select_candidate(&candidates), 1);
+    }
+
+    #[test]
+    fn candidate_ties_keep_the_earlier_attempt() {
+        let candidates = [
+            candidate_with_score(ExtractionMode::Balanced, 20, 100),
+            candidate_with_score(ExtractionMode::Conservative, 20, 180),
+        ];
+
+        assert_eq!(select_candidate(&candidates), 0);
+    }
+
+    #[cfg(feature = "ensemble")]
+    #[test]
+    fn ensemble_compares_only_native_rust_strategies() {
+        let options = ExtractionOptions {
+            mode: ExtractionMode::Ensemble,
+            ..ExtractionOptions::default()
+        };
+        let result = extract(
+            NOISY,
+            Some(&Url::parse("https://example.test/story").unwrap()),
+            &options,
+            Backend::Local,
+            SnapshotObservations::static_html(crate::SnapshotKind::CallerHtml),
+            &[],
+        )
+        .unwrap();
+
+        assert_eq!(result.attempts.len(), 3);
+        assert!(
+            result
+                .attempts
+                .iter()
+                .all(|attempt| attempt.engine == "readabilities-rs")
+        );
+        assert_eq!(
+            result
+                .attempts
+                .iter()
+                .map(|attempt| attempt.mode)
+                .collect::<Vec<_>>(),
+            vec![
+                ExtractionMode::Balanced,
+                ExtractionMode::Conservative,
+                ExtractionMode::Aggressive,
+            ]
+        );
     }
 }

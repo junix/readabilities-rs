@@ -17,33 +17,22 @@ explicit policy, and `unsupported` is rejected rather than silently emulated.
 | Derived Markdown/text | yes | yes | required | native Markdown E2E facts + render provenance |
 | Origin HTTP | `http` feature | `read` | required in default build | redirects/bytes/timing |
 | Native ensemble | `ensemble` feature | `--mode ensemble` | optional | candidate comparison |
-| Browser live DOM | `browser` feature | `--browser` | optional | snapshot observations |
-| Jina Reader | `providers` feature | `--provider jina` | optional, explicit | requests/cost unknown |
-| Firecrawl | `providers` feature | `--provider firecrawl` | optional, explicit | request/task IDs |
-| YXT | `providers` feature | `--provider yxt` | optional, explicit | request/task IDs |
+| Managed extraction providers | unsupported | unsupported | no | absent from API and CLI |
 | Python/Node subprocess extraction | unsupported | unsupported | no | rejected policy |
+| Browser/PaaS CLI execution | unsupported | unsupported | no | absent from dependencies, API, and CLI |
 | Hidden remote fallback | unsupported | unsupported | no | validation error |
-| Streaming provider API | unsupported in v1 | unsupported | no | rejected policy |
 
 ## Snapshot observations
 
-| Observation | Static/origin HTML | Browser snapshot |
-|---|---:|---:|
-| HTML bytes / serialized DOM | yes | yes |
-| JavaScript executed | no | yes |
-| Computed styles | no | not claimed in v1 |
-| Element geometry | no | not claimed in v1 |
-| Shadow DOM flattened | no | not claimed in v1 |
-
-The browser capability intentionally reports only what its acquisition path
-actually captured.
+Static caller HTML and origin HTTP response bytes are the only snapshot kinds.
+The crate does not execute JavaScript, inspect computed styles or geometry, or
+flatten shadow DOM. Callers that need those observations must provide captured
+HTML themselves; `readabilities-rs` will still perform extraction locally.
 
 ## Cargo feature contract
 
 - `--no-default-features`: synchronous local HTML extraction, sanitizer, and
   all renderers compile and test without an async runtime or network client.
 - default: `http` plus `ensemble`.
-- `providers`: typed managed-reader adapters; implies `http`.
-- `browser`: Chrome DevTools acquisition; implies `http`.
-- `all-features`: every optional adapter compiles, but live tests still require
-  explicit environment variables and never gate the offline suite.
+- `all-features`: native extraction plus direct origin HTTP; there is no
+  external-process or managed-provider feature.

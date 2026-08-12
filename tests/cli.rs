@@ -25,6 +25,32 @@ fn help_version_and_doctor_are_public() {
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(value["core"], true);
     assert_eq!(value["schema_version"], 1);
+    assert_eq!(value["providers"], false);
+    assert_eq!(value["external_processes"], false);
+}
+
+#[cfg(feature = "http")]
+#[test]
+fn vendor_provider_flags_are_not_part_of_the_cli() {
+    let output = binary()
+        .args(["read", "https://example.test/article", "--provider", "jina"])
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("unexpected argument '--provider'"));
+}
+
+#[cfg(feature = "http")]
+#[test]
+fn external_browser_flags_are_not_part_of_the_cli() {
+    let output = binary()
+        .args(["read", "https://example.test/article", "--browser"])
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("unexpected argument '--browser'"));
 }
 
 #[test]

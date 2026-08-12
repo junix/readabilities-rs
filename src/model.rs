@@ -16,10 +16,6 @@ pub const SCHEMA_VERSION: u32 = 1;
 pub enum Backend {
     Local,
     Origin,
-    Browser,
-    Jina,
-    Firecrawl,
-    Yxt,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -33,8 +29,6 @@ pub enum Stage {
     Normalize,
     Sanitize,
     Render,
-    RemoteSubmit,
-    RemotePoll,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -136,9 +130,6 @@ impl Warning {
 pub enum SnapshotKind {
     CallerHtml,
     OriginResponse,
-    BrowserDom,
-    ManagedHtml,
-    ManagedMarkdown,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -174,7 +165,6 @@ pub struct Provenance {
     pub source_url: Option<String>,
     pub snapshot: SnapshotObservations,
     pub degraded: bool,
-    pub markdown_native: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -214,7 +204,7 @@ impl Article {
                     error.to_string(),
                 )
             }),
-            OutputFormat::Text => Ok(decruft::strip_html_tags(&self.content)
+            OutputFormat::Text => Ok(crate::native::strip_html_tags(&self.content)
                 .split_whitespace()
                 .collect::<Vec<_>>()
                 .join(" ")),
@@ -263,11 +253,8 @@ impl Default for ExtractionOptions {
 pub struct RequestBudget {
     pub deadline: Duration,
     pub max_origin_requests: u32,
-    pub max_remote_requests: u32,
     pub max_download_bytes: usize,
     pub max_redirects: u8,
-    pub max_browser_launches: u8,
-    pub max_billable_submissions: u32,
 }
 
 impl Default for RequestBudget {
@@ -275,11 +262,8 @@ impl Default for RequestBudget {
         Self {
             deadline: Duration::from_secs(30),
             max_origin_requests: 5,
-            max_remote_requests: 8,
             max_download_bytes: 8 * 1024 * 1024,
             max_redirects: 4,
-            max_browser_launches: 1,
-            max_billable_submissions: 1,
         }
     }
 }
@@ -301,10 +285,6 @@ impl RequestBudget {
 #[derive(Debug, Clone)]
 pub enum Acquisition {
     Origin,
-    #[cfg(feature = "browser")]
-    Browser(BrowserPolicy),
-    #[cfg(feature = "providers")]
-    Managed(ManagedProvider),
 }
 
 #[derive(Debug, Clone)]
@@ -327,100 +307,6 @@ impl Default for UrlPolicy {
             allow_private_networks: false,
         }
     }
-}
-
-#[cfg(feature = "browser")]
-#[derive(Debug, Clone)]
-pub struct BrowserPolicy {
-    pub viewport_width: u32,
-    pub viewport_height: u32,
-    pub wait_after_load: Duration,
-    pub executable: Option<std::path::PathBuf>,
-    pub block_images: bool,
-    pub disable_cache: bool,
-}
-
-#[cfg(feature = "browser")]
-impl Default for BrowserPolicy {
-    fn default() -> Self {
-        Self {
-            viewport_width: 1280,
-            viewport_height: 900,
-            wait_after_load: Duration::from_millis(500),
-            executable: None,
-            block_images: true,
-            disable_cache: true,
-        }
-    }
-}
-
-#[cfg(feature = "providers")]
-#[derive(Clone)]
-pub enum ManagedProvider {
-    Jina(JinaConfig),
-    Firecrawl(FirecrawlConfig),
-    Yxt(YxtConfig),
-}
-
-#[cfg(feature = "providers")]
-impl fmt::Debug for ManagedProvider {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(match self {
-            Self::Jina(_) => "ManagedProvider::Jina(<redacted>)",
-            Self::Firecrawl(_) => "ManagedProvider::Firecrawl(<redacted>)",
-            Self::Yxt(_) => "ManagedProvider::Yxt(<redacted>)",
-        })
-    }
-}
-
-#[cfg(feature = "providers")]
-#[derive(Clone)]
-pub struct JinaConfig {
-    pub endpoint: Url,
-    pub api_key: Option<secrecy::SecretString>,
-    pub no_cache: bool,
-}
-
-#[cfg(feature = "providers")]
-impl Default for JinaConfig {
-    fn default() -> Self {
-        Self {
-            endpoint: Url::parse("https://r.jina.ai/").expect("static URL is valid"),
-            api_key: None,
-            no_cache: false,
-        }
-    }
-}
-
-#[cfg(feature = "providers")]
-#[derive(Clone)]
-pub struct FirecrawlConfig {
-    pub endpoint: Url,
-    pub api_key: secrecy::SecretString,
-    pub zero_data_retention: bool,
-    pub store_in_cache: bool,
-}
-
-#[cfg(feature = "providers")]
-impl FirecrawlConfig {
-    pub fn new(api_key: secrecy::SecretString) -> Self {
-        Self {
-            endpoint: Url::parse("https://api.firecrawl.dev/v2/scrape")
-                .expect("static URL is valid"),
-            api_key,
-            zero_data_retention: false,
-            store_in_cache: false,
-        }
-    }
-}
-
-#[cfg(feature = "providers")]
-#[derive(Clone)]
-pub struct YxtConfig {
-    pub endpoint: Url,
-    pub authorization: secrecy::SecretString,
-    pub client: String,
-    pub poll_interval: Duration,
 }
 
 #[derive(Debug, Clone)]
@@ -486,23 +372,7 @@ pub struct RemovalRecord {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct CostLedger {
     pub origin_requests: u32,
-    pub remote_requests: u32,
-    pub browser_launches: u32,
-    pub billable_submissions: u32,
     pub downloaded_bytes: usize,
-    pub monetary_cost: CostValue,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum CostValue {
-    #[default]
-    None,
-    Unknown,
-    Known {
-        currency: String,
-        amount_micros: u64,
-    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

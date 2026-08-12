@@ -1,8 +1,7 @@
 # readabilities-rs public contract
 
-This document freezes the observable v1 contract. Internal extraction rules,
-DOM libraries, and provider wire formats may change without changing this
-contract.
+This document freezes the observable v1 contract. Internal extraction rules
+and DOM libraries may change without changing this contract.
 
 ## Purpose
 
@@ -35,19 +34,19 @@ implement a second pipeline.
 
 1. `extract_html` never performs network I/O, even for site-specific content.
 2. `UrlPolicy::default()` fetches the supplied origin and runs local Rust
-   extraction. Browser execution and managed providers require explicit policy.
+   extraction. Managed providers and external-process acquisition are not part
+   of the dependencies, library, or CLI.
 3. Every successful `Article` contains non-empty, parseable, finally sanitized
    HTML. Script elements, event-handler attributes, and dangerous URI schemes
    are never returned.
 4. Clean HTML is canonical. Markdown and text are derived from that same HTML;
    selecting an output format cannot affect content selection.
-5. No-content, origin failure, browser failure, provider failure, and budget
-   exhaustion remain distinct typed failures. They are never converted to an
-   empty successful string.
+5. No-content, origin failure, and budget exhaustion remain distinct typed
+   failures. They are never converted to an empty successful string.
 6. `Execution` records attempts, stage timing, warnings, provenance, bounded
-   removal previews, and known/unknown costs without logging secrets.
-7. Static HTML never claims browser-only observations such as computed styles,
-   element geometry, executed JavaScript, or shadow DOM.
+   removal previews, and acquisition resource counts without logging secrets.
+7. Static HTML never claims observations such as computed styles, element
+   geometry, executed JavaScript, or flattened shadow DOM.
 
 ## Input modes
 
@@ -63,9 +62,10 @@ embedded URL credentials, invalid budgets, and incompatible backend policies.
   conservative short-result retry.
 - `Conservative`: favors recall and retains uncertain blocks.
 - `Aggressive`: favors noise rejection and may remove more low-scoring blocks.
-- `Ensemble`: runs the primary engine and a native Rust Trafilatura candidate,
-  then selects using explainable quality signals. It is opt-in because it costs
-  more CPU and is unavailable without the `ensemble` Cargo feature.
+- `Ensemble`: runs Balanced, Conservative, and Aggressive variants of the
+  local Rust pipeline, then selects the highest quality score with earlier
+  attempts winning ties. It is unavailable without the `ensemble` Cargo
+  feature.
 
 The generic extractor remains capable without a site match. A `SiteConfig` may
 declare host/path matching, one content-root selector, and removal selectors.
@@ -92,15 +92,14 @@ offset a failed quality fact.
 
 `Article` includes canonical HTML, metadata, word count, quality, warnings,
 and provenance. `Article::render` supports `Html`, `Markdown`, `Text`, and
-`Json`. Managed provider Markdown is labelled `NativeMarkdown`; Markdown
-derived from clean HTML is labelled `DerivedMarkdown`.
+`Json`. Markdown is always derived from the same clean HTML.
 
 ## CLI surface
 
 ```text
 readabilities-rs extract [PATH|-] [--url BASE] [--format json|html|markdown|text]
   [--site-config PATH]... [--no-site-configs]
-readabilities-rs read URL [--format ...] [--browser]
+readabilities-rs read URL [--format ...]
   [--site-config PATH]... [--no-site-configs]
 readabilities-rs doctor [--json]
 readabilities-rs version [--json]

@@ -152,8 +152,6 @@ fn stage_name(stage: Stage) -> &'static str {
         Stage::Normalize => "normalize",
         Stage::Sanitize => "sanitize",
         Stage::Render => "render",
-        Stage::RemoteSubmit => "remote_submit",
-        Stage::RemotePoll => "remote_poll",
     }
 }
 

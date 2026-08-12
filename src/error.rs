@@ -12,12 +12,10 @@ pub enum ErrorKind {
     Unsupported,
     OriginHttp,
     Decode,
-    Browser,
     Parse,
     NoContent,
     Authentication,
     RateLimit,
-    RemoteJob,
     Timeout,
     BudgetExceeded,
     Cancelled,
@@ -43,8 +41,6 @@ pub struct ReadError {
     pub backend: Backend,
     pub message: String,
     pub retry: RetryAdvice,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub request_id: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub completed_attempts: Vec<AttemptRecord>,
 }
@@ -62,19 +58,12 @@ impl ReadError {
             backend,
             message: redact(&message.into()),
             retry: RetryAdvice::Never,
-            request_id: None,
             completed_attempts: Vec::new(),
         }
     }
 
     pub(crate) fn with_retry(mut self, retry: RetryAdvice) -> Self {
         self.retry = retry;
-        self
-    }
-
-    #[cfg(feature = "providers")]
-    pub(crate) fn with_request_id(mut self, request_id: impl Into<String>) -> Self {
-        self.request_id = Some(request_id.into());
         self
     }
 
@@ -106,7 +95,7 @@ mod tests {
         let err = ReadError::new(
             ErrorKind::Authentication,
             Stage::Acquire,
-            Backend::Firecrawl,
+            Backend::Origin,
             "Authorization: Bearer secret-token",
         );
         assert!(!err.message.contains("secret-token"));
