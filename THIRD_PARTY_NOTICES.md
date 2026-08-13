@@ -1,8 +1,9 @@
 # Third-party notices
 
-Parts of the HTML charset detection, document-base handling, and JSON-LD
-metadata behavior were adapted from the Crawlberg source tree inspected at
-commit `e855adfa5a22bef61ba747f3b56ad4fb27fe4b5b`.
+Parts of the HTML charset detection, document-base handling, normalized
+metadata behavior, and IPv4-embedded IPv6 SSRF defense were adapted from the
+Crawlberg source tree inspected at commit
+`e855adfa5a22bef61ba747f3b56ad4fb27fe4b5b`.
 
 > MIT License
 >

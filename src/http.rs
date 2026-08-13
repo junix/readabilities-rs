@@ -1,5 +1,4 @@
 use std::net::{IpAddr, SocketAddr};
-use std::str::FromStr;
 use std::time::Instant;
 
 use futures_util::StreamExt;
@@ -193,7 +192,7 @@ pub(crate) async fn validate_network_target(
     url: &Url,
     allow_private: bool,
 ) -> Result<Vec<SocketAddr>> {
-    let host = url.host_str().ok_or_else(|| {
+    let host = url.host().ok_or_else(|| {
         ReadError::new(
             ErrorKind::InvalidInput,
             Stage::Validate,
@@ -209,10 +208,10 @@ pub(crate) async fn validate_network_target(
             "URL must include a known or explicit port",
         )
     })?;
-    let addresses = if let Ok(ip) = IpAddr::from_str(host) {
-        vec![SocketAddr::new(ip, port)]
-    } else {
-        tokio::net::lookup_host((host, port))
+    let addresses = match host {
+        url::Host::Ipv4(ip) => vec![SocketAddr::new(IpAddr::V4(ip), port)],
+        url::Host::Ipv6(ip) => vec![SocketAddr::new(IpAddr::V6(ip), port)],
+        url::Host::Domain(host) => tokio::net::lookup_host((host, port))
             .await
             .map_err(|error| {
                 ReadError::new(
@@ -223,7 +222,7 @@ pub(crate) async fn validate_network_target(
                 )
                 .with_retry(RetryAdvice::RetrySameBackend)
             })?
-            .collect::<Vec<_>>()
+            .collect::<Vec<_>>(),
     };
     if addresses.is_empty() {
         return Err(ReadError::new(
@@ -245,7 +244,7 @@ pub(crate) async fn validate_network_target(
 }
 
 async fn origin_client(url: &Url, allow_private: bool) -> Result<Client> {
-    let host = url.host_str().ok_or_else(|| {
+    let host = url.host().ok_or_else(|| {
         ReadError::new(
             ErrorKind::InvalidInput,
             Stage::Validate,
@@ -253,11 +252,16 @@ async fn origin_client(url: &Url, allow_private: bool) -> Result<Client> {
             "URL must include a host",
         )
     })?;
+    let host = match host {
+        url::Host::Domain(host) => host.to_string(),
+        url::Host::Ipv4(ip) => ip.to_string(),
+        url::Host::Ipv6(ip) => ip.to_string(),
+    };
     let addresses = validate_network_target(url, allow_private).await?;
     Client::builder()
         .redirect(Policy::none())
         .no_proxy()
-        .resolve_to_addrs(host, &addresses)
+        .resolve_to_addrs(&host, &addresses)
         .user_agent(format!(
             "readabilities-rs/{} (+https://github.com/junix/readabilities-rs)",
             crate::VERSION
@@ -274,7 +278,7 @@ async fn origin_client(url: &Url, allow_private: bool) -> Result<Client> {
 }
 
 fn is_non_public(ip: IpAddr) -> bool {
-    match ip {
+    match canonicalize_ip(ip) {
         IpAddr::V4(ip) => {
             ip.is_private()
                 || ip.is_loopback()
@@ -295,6 +299,29 @@ fn is_non_public(ip: IpAddr) -> bool {
                 || (segments[0] == 0x2001 && segments[1] == 0x0db8)
         }
     }
+}
+
+/// Collapse IPv6 forms that route to an embedded IPv4 destination before the
+/// address is classified. Otherwise IPv4-mapped loopback/private addresses and
+/// the RFC 6052 well-known NAT64 prefix bypass the IPv4 deny rules.
+fn canonicalize_ip(ip: IpAddr) -> IpAddr {
+    let IpAddr::V6(ipv6) = ip else {
+        return ip;
+    };
+
+    if let Some(ipv4) = ipv6.to_ipv4_mapped() {
+        return IpAddr::V4(ipv4);
+    }
+
+    let segments = ipv6.segments();
+    if segments[0] == 0x0064 && segments[1] == 0xff9b && segments[2..6] == [0, 0, 0, 0] {
+        let octets = ipv6.octets();
+        return IpAddr::V4(std::net::Ipv4Addr::new(
+            octets[12], octets[13], octets[14], octets[15],
+        ));
+    }
+
+    ip
 }
 
 fn validate_redirect(
@@ -360,6 +387,49 @@ fn map_status(status: StatusCode) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn embedded_private_ipv4_addresses_are_non_public() {
+        for raw in [
+            "::ffff:127.0.0.1",
+            "::ffff:169.254.169.254",
+            "::ffff:10.0.0.1",
+            "::ffff:192.168.1.1",
+            "64:ff9b::7f00:1",
+        ] {
+            let ip = raw.parse::<IpAddr>().unwrap();
+            assert!(is_non_public(ip), "{raw} must be denied");
+        }
+    }
+
+    #[test]
+    fn embedded_public_ipv4_and_public_ipv6_remain_public() {
+        for raw in ["::ffff:8.8.8.8", "64:ff9b::808:808", "2606:4700:4700::1111"] {
+            let ip = raw.parse::<IpAddr>().unwrap();
+            assert!(!is_non_public(ip), "{raw} must remain permitted");
+        }
+    }
+
+    #[tokio::test]
+    async fn network_validation_denies_embedded_private_ipv4_literals() {
+        for raw in [
+            "http://[::ffff:127.0.0.1]/",
+            "http://[::ffff:169.254.169.254]/",
+            "http://[64:ff9b::7f00:1]/",
+        ] {
+            let url = Url::parse(raw).unwrap();
+            let error = validate_network_target(&url, false).await.unwrap_err();
+            assert_eq!(error.kind, ErrorKind::InvalidInput, "{raw}");
+        }
+    }
+
+    #[tokio::test]
+    async fn network_validation_keeps_public_ipv6_literals_out_of_dns() {
+        let expected = "2606:4700:4700::1111".parse::<IpAddr>().unwrap();
+        let url = Url::parse("http://[2606:4700:4700::1111]/").unwrap();
+        let addresses = validate_network_target(&url, false).await.unwrap();
+        assert_eq!(addresses, [SocketAddr::new(expected, 80)]);
+    }
 
     #[test]
     fn cross_origin_redirects_are_denied_by_default() {

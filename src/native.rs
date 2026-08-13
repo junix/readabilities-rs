@@ -496,105 +496,72 @@ fn effective_base_url(document: &Html, fallback: Option<&Url>) -> Option<Url> {
 }
 
 fn extract_metadata(document: &Html, base_url: Option<&Url>) -> Metadata {
-    let title = meta_content(
-        document,
-        &[
-            "meta[property=\"og:title\"]",
-            "meta[name=\"twitter:title\"]",
-            "meta[name=\"dc.title\"]",
-        ],
-    )
-    .or_else(|| selector_text(document, "title"));
+    let meta = collect_meta_values(document);
+    let title = meta_content(&meta, &["og:title", "twitter:title", "dc.title"])
+        .or_else(|| selector_text(document, "title"));
     let author = meta_content(
-        document,
+        &meta,
         &[
-            "meta[name=\"author\"]",
-            "meta[property=\"article:author\"]",
-            "meta[name=\"byl\"]",
-            "meta[name=\"twitter:creator\"]",
-            "meta[name=\"dc.creator\"]",
+            "author",
+            "article:author",
+            "byl",
+            "twitter:creator",
+            "dc.creator",
         ],
     );
     let description = meta_content(
-        document,
+        &meta,
         &[
-            "meta[name=\"description\"]",
-            "meta[property=\"og:description\"]",
-            "meta[name=\"twitter:description\"]",
-            "meta[name=\"dc.description\"]",
+            "description",
+            "og:description",
+            "twitter:description",
+            "dc.description",
         ],
     );
     let published = meta_content(
-        document,
-        &[
-            "meta[property=\"article:published_time\"]",
-            "meta[name=\"date\"]",
-            "meta[name=\"pubdate\"]",
-            "meta[name=\"dc.date\"]",
-        ],
+        &meta,
+        &["article:published_time", "date", "pubdate", "dc.date"],
     );
-    let modified = meta_content(
-        document,
-        &[
-            "meta[property=\"article:modified_time\"]",
-            "meta[name=\"last-modified\"]",
-        ],
-    );
-    let site = meta_content(
-        document,
-        &[
-            "meta[property=\"og:site_name\"]",
-            "meta[name=\"application-name\"]",
-            "meta[name=\"dc.publisher\"]",
-        ],
-    );
+    let modified = meta_content(&meta, &["article:modified_time", "last-modified"]);
+    let site = meta_content(&meta, &["og:site_name", "application-name", "dc.publisher"]);
     let language = select_first(document, "html")
         .and_then(|element| element.attr("lang"))
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
-        .or_else(|| {
-            meta_content(
-                document,
-                &["meta[name=\"dc.language\"]", "meta[property=\"og:locale\"]"],
-            )
-        });
-    let image = meta_content(
-        document,
-        &[
-            "meta[property=\"og:image\"]",
-            "meta[name=\"twitter:image\"]",
-        ],
-    )
-    .map(|value| resolve_url(&value, base_url));
+        .or_else(|| meta_content(&meta, &["dc.language", "og:locale"]));
+    let image = meta_content(&meta, &["og:image", "twitter:image"])
+        .map(|value| resolve_url(&value, base_url));
     let canonical_url = select_first(document, "link[rel=\"canonical\"]")
         .and_then(|element| element.attr("href"))
         .map(|value| resolve_url(value, base_url))
         .or_else(|| {
-            meta_content(
-                document,
-                &["meta[property=\"og:url\"]", "meta[name=\"dc.identifier\"]"],
-            )
-            .map(|value| resolve_url(&value, base_url))
+            meta_content(&meta, &["og:url", "dc.identifier"])
+                .map(|value| resolve_url(&value, base_url))
         });
-    let mut keywords = meta_contents(
-        document,
-        &[
-            "meta[name=\"keywords\"]",
-            "meta[property=\"article:tag\"]",
-            "meta[name=\"dc.subject\"]",
-        ],
-    )
-    .into_iter()
-    .flat_map(|value| {
-        value
-            .split(',')
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(ToOwned::to_owned)
-            .collect::<Vec<_>>()
-    })
-    .collect::<Vec<_>>();
+    let mut keywords = meta_contents(&meta, &["keywords", "article:tag"])
+        .into_iter()
+        .flat_map(|value| {
+            value
+                .split(',')
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .chain(
+            meta_contents(&meta, &["dc.subject"])
+                .into_iter()
+                .flat_map(|value| {
+                    value
+                        .split([',', ';'])
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(ToOwned::to_owned)
+                        .collect::<Vec<_>>()
+                }),
+        )
+        .collect::<Vec<_>>();
     deduplicate(&mut keywords);
 
     let mut metadata = Metadata {
@@ -614,32 +581,40 @@ fn extract_metadata(document: &Html, base_url: Option<&Url>) -> Metadata {
     metadata
 }
 
-fn meta_content(document: &Html, selectors: &[&str]) -> Option<String> {
-    selectors.iter().find_map(|raw| {
-        select_first(document, raw)
-            .and_then(|element| element.attr("content"))
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(ToOwned::to_owned)
+fn collect_meta_values(document: &Html) -> Vec<(String, String)> {
+    let selector = Selector::parse("meta").expect("static selector must be valid");
+    document
+        .select(&selector)
+        .filter_map(|element| {
+            let key = element
+                .attr("name")
+                .or_else(|| element.attr("property"))?
+                .trim();
+            let content = element.attr("content")?.trim();
+            (!key.is_empty() && !content.is_empty())
+                .then(|| (key.to_ascii_lowercase(), content.to_string()))
+        })
+        .collect()
+}
+
+fn meta_content(values: &[(String, String)], keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|key| {
+        values
+            .iter()
+            .find(|(candidate, _)| candidate == key)
+            .map(|(_, value)| value.clone())
     })
 }
 
-fn meta_contents(document: &Html, selectors: &[&str]) -> Vec<String> {
-    let mut values = Vec::new();
-    for raw in selectors {
-        let Ok(selector) = Selector::parse(raw) else {
-            continue;
-        };
-        values.extend(
-            document
-                .select(&selector)
-                .filter_map(|element| element.attr("content"))
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(ToOwned::to_owned),
-        );
-    }
-    values
+fn meta_contents(values: &[(String, String)], keys: &[&str]) -> Vec<String> {
+    keys.iter()
+        .flat_map(|key| {
+            values
+                .iter()
+                .filter(move |(candidate, _)| candidate == key)
+                .map(|(_, value)| value.clone())
+        })
+        .collect()
 }
 
 fn extract_json_ld_metadata(document: &Html, base_url: Option<&Url>) -> Metadata {
@@ -1043,5 +1018,58 @@ mod tests {
         );
 
         assert_eq!(result.metadata.keywords, ["head-topic", "rust"]);
+    }
+
+    #[test]
+    fn metadata_names_are_case_insensitive() {
+        let result = extract(
+            r#"<html lang="en"><head>
+              <title>Generic repository title</title>
+              <meta name="DC.title" content="Effects on Marine Biodiversity">
+              <meta name="DC.creator" content="Dr. Jane Smith">
+              <meta name="DC.subject" content="Marine Biology; Climate Change; Biodiversity">
+              <meta name="DC.description" content="A comprehensive marine study.">
+              <meta name="DC.publisher" content="Academic Press">
+              <meta name="DC.date" content="2025-03-01">
+              <meta name="DC.identifier" content="/papers/marine-study">
+              <meta PROPERTY="OG:IMAGE" content="/images/hero.jpg">
+            </head><body><article>
+              <h1>Effects on Marine Biodiversity</h1>
+              <p>A comprehensive marine study with enough readable content.</p>
+            </article></body></html>"#,
+            &NativeOptions {
+                base_url: Some(&Url::parse("https://example.test/source").unwrap()),
+                content_selector: None,
+                include_images: true,
+                include_replies: true,
+                conservative: false,
+                aggressive: false,
+                diagnostics: false,
+            },
+        );
+
+        assert_eq!(
+            result.metadata.title.as_deref(),
+            Some("Effects on Marine Biodiversity")
+        );
+        assert_eq!(result.metadata.author.as_deref(), Some("Dr. Jane Smith"));
+        assert_eq!(
+            result.metadata.description.as_deref(),
+            Some("A comprehensive marine study.")
+        );
+        assert_eq!(result.metadata.published.as_deref(), Some("2025-03-01"));
+        assert_eq!(result.metadata.site.as_deref(), Some("Academic Press"));
+        assert_eq!(
+            result.metadata.canonical_url.as_deref(),
+            Some("https://example.test/papers/marine-study")
+        );
+        assert_eq!(
+            result.metadata.image.as_deref(),
+            Some("https://example.test/images/hero.jpg")
+        );
+        assert_eq!(
+            result.metadata.keywords,
+            ["Marine Biology", "Climate Change", "Biodiversity"]
+        );
     }
 }
