@@ -8,6 +8,9 @@ use crate::model::{
 };
 use crate::site::{SiteConfig, SiteConfigError};
 
+#[cfg(feature = "charset")]
+use crate::page::{PageAnalysis, PageSnapshot};
+
 #[cfg(feature = "http")]
 use crate::model::{Acquisition, AttemptRecord, Metadata, StageRecord, Warning};
 
@@ -79,6 +82,57 @@ impl Reader {
             &self.site_configs,
         )
         .map(|result| result.article)
+    }
+
+    /// Analyze a page that was already fetched by a crawler or another caller.
+    ///
+    /// The raw bytes are decoded here, full-page links are discovered before
+    /// readability cleanup, and article extraction runs against the exact same
+    /// immutable snapshot. No network request is made by this method.
+    #[cfg(feature = "charset")]
+    pub fn analyze_snapshot(&self, snapshot: PageSnapshot) -> PageAnalysis {
+        let x_robots_tag = snapshot
+            .response_headers
+            .get("x-robots-tag")
+            .map(String::as_str);
+        if !crate::page::looks_like_html(snapshot.content_type.as_deref(), &snapshot.body) {
+            let mut robots = crate::page::MetaRobots::default();
+            crate::page::apply_x_robots_tag(&mut robots, x_robots_tag);
+            return PageAnalysis {
+                article: Err(ReadError::new(
+                    ErrorKind::Unsupported,
+                    Stage::Parse,
+                    Backend::Origin,
+                    "snapshot is not recognizable HTML",
+                )),
+                links: Vec::new(),
+                canonical_url: None,
+                robots,
+                detected_encoding: "binary".to_string(),
+                decode_errors: false,
+            };
+        }
+        let decoded = crate::charset::decode_html(snapshot.content_type.as_deref(), &snapshot.body);
+        let mut facts = crate::page::inspect(&decoded.html, &snapshot.final_url);
+        crate::page::apply_x_robots_tag(&mut facts.robots, x_robots_tag);
+        let article = engine::extract(
+            &decoded.html,
+            Some(&snapshot.final_url),
+            &self.defaults,
+            Backend::Origin,
+            snapshot.observations,
+            &self.site_configs,
+        )
+        .map(|result| result.article);
+
+        PageAnalysis {
+            article,
+            links: facts.links,
+            canonical_url: facts.canonical_url,
+            robots: facts.robots,
+            detected_encoding: decoded.encoding.to_string(),
+            decode_errors: decoded.had_errors,
+        }
     }
 
     pub async fn read_url(&self, url: &Url, policy: &UrlPolicy) -> Result<Article> {

@@ -151,6 +151,16 @@ impl SnapshotObservations {
             shadow_dom_flattened: false,
         }
     }
+
+    /// Observations available from an ordinary HTTP response body.
+    pub fn origin_response() -> Self {
+        Self::static_html(SnapshotKind::OriginResponse)
+    }
+
+    /// Observations available from caller-supplied static HTML.
+    pub fn caller_html() -> Self {
+        Self::static_html(SnapshotKind::CallerHtml)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

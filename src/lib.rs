@@ -4,7 +4,7 @@
 //! and text are renderings of that canonical article, never inputs to content
 //! selection.
 
-#[cfg(feature = "http")]
+#[cfg(feature = "charset")]
 mod charset;
 mod engine;
 mod error;
@@ -13,12 +13,14 @@ mod http;
 mod markdown;
 mod model;
 mod native;
+mod page;
 mod reader;
 mod sanitize;
 mod site;
 
 pub use error::{ErrorKind, ReadError, Result, RetryAdvice};
 pub use model::*;
+pub use page::{DiscoveredLink, MetaRobots, PageAnalysis, PageSnapshot};
 pub use reader::Reader;
 pub use site::{SiteConfig, SiteConfigError, parse_site_configs};
 

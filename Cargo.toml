@@ -20,7 +20,8 @@ required-features = ["http"]
 
 [features]
 default = ["http", "ensemble"]
-http = ["dep:encoding_rs", "dep:futures-util", "dep:reqwest", "dep:tokio"]
+charset = ["dep:encoding_rs"]
+http = ["charset", "dep:futures-util", "dep:reqwest", "dep:tokio"]
 ensemble = []
 
 [dependencies]
