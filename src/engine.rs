@@ -3,6 +3,7 @@ use std::time::Instant;
 use unicode_segmentation::UnicodeSegmentation;
 use url::Url;
 
+use crate::depth;
 use crate::error::{ErrorKind, ReadError, Result};
 use crate::model::{
     Article, AttemptRecord, Backend, ExtractionMode, ExtractionOptions, Metadata, Provenance,
@@ -45,6 +46,22 @@ pub(crate) fn extract(
             Stage::Validate,
             backend,
             "HTML input is empty",
+        ));
+    }
+    // Depth screen before any parser sees the bytes: tree building cost
+    // grows superlinearly with nesting, so a depth bomb fails fast here
+    // instead of burning the budget in the DOM builder (dsh degrades to raw
+    // HTML; this pipeline reports a structured error instead).
+    if depth::exceeds_depth(html) {
+        return Err(ReadError::new(
+            ErrorKind::DepthExceeded,
+            Stage::Validate,
+            backend,
+            format!(
+                "HTML nesting depth exceeds the conversion budget ({}); \
+                 refusing to build a pathological element tree",
+                depth::MAX_CONVERSION_DEPTH
+            ),
         ));
     }
     let mut stages = vec![StageRecord {
@@ -402,6 +419,51 @@ mod tests {
         let signals =
             analyze("<p>这是一个足够清晰的中文正文段落，用于验证中文字符不会被计算为零。</p>");
         assert!(signals.words > 10);
+    }
+
+    #[test]
+    fn pathological_nesting_fails_fast_at_the_depth_screen() {
+        let bomb = format!(
+            "{}<p>x</p>",
+            "<div>".repeat(depth::MAX_CONVERSION_DEPTH + 1)
+        );
+        let Err(error) = extract(
+            &bomb,
+            None,
+            &ExtractionOptions::default(),
+            Backend::Local,
+            SnapshotObservations::static_html(crate::SnapshotKind::CallerHtml),
+            &[],
+        ) else {
+            panic!("depth bomb must fail extraction");
+        };
+        assert_eq!(error.kind, ErrorKind::DepthExceeded);
+        assert_eq!(error.stage, Stage::Validate);
+    }
+
+    #[test]
+    fn reasonably_nested_documents_pass_the_depth_screen() {
+        // 400 real levels plus one depth bomb hidden in a comment still passes:
+        // comments without internal '<' close properly and never stack.
+        let html = format!(
+            "<!-- {} -->{}<p>body</p>",
+            "-".repeat(600),
+            "<section>".repeat(400)
+        );
+        let result = extract(
+            &html,
+            None,
+            &ExtractionOptions::default(),
+            Backend::Local,
+            SnapshotObservations::static_html(crate::SnapshotKind::CallerHtml),
+            &[],
+        );
+        // Weak content is allowed to fail extraction later; the failure must
+        // never be the depth screen.
+        match result {
+            Ok(_) => {}
+            Err(error) => assert_ne!(error.kind, ErrorKind::DepthExceeded),
+        }
     }
 
     fn candidate_with_score(mode: ExtractionMode, score: i32, text_chars: usize) -> Candidate {

@@ -6,6 +6,7 @@
 
 #[cfg(feature = "charset")]
 mod charset;
+mod depth;
 mod engine;
 mod error;
 #[cfg(feature = "http")]

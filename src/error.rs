@@ -18,6 +18,7 @@ pub enum ErrorKind {
     RateLimit,
     Timeout,
     BudgetExceeded,
+    DepthExceeded,
     Cancelled,
     Render,
     InternalInvariant,
