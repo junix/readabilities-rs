@@ -22,6 +22,7 @@ struct AcquiredInput {
     snapshot: SnapshotObservations,
     metadata: Metadata,
     stage: StageRecord,
+    truncated_by_bytes: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -302,6 +303,15 @@ impl Reader {
                             format!("selected explicit fallback acquisition {backend}"),
                         ));
                     }
+                    if acquired.truncated_by_bytes {
+                        local.article.warnings.push(Warning::new(
+                            "byte_truncated",
+                            format!(
+                                "origin response exceeded the byte budget of {} bytes; the body was cut to the budget mid-stream",
+                                policy.budget.max_download_bytes
+                            ),
+                        ));
+                    }
                     merge_missing_metadata(&mut local.article.metadata, acquired.metadata);
                     attempts.push(acquisition_attempt);
                     attempts.append(&mut local.attempts);
@@ -392,6 +402,7 @@ async fn acquire(
                 snapshot: acquired.snapshot,
                 metadata: Metadata::default(),
                 stage: acquired.stage,
+                truncated_by_bytes: acquired.truncated_by_bytes,
             })
         }
     }

@@ -305,6 +305,13 @@ pub struct UrlPolicy {
     pub budget: RequestBudget,
     pub allow_cross_origin_redirects: bool,
     pub allow_private_networks: bool,
+    /// Opt-in: a body that grows past `max_download_bytes` mid-stream yields a
+    /// bounded usable prefix instead of a `BudgetExceeded` error (the article
+    /// then carries a `byte_truncated` warning). A `Content-Length` that
+    /// honestly declares an over-cap body still rejects — truncation is for
+    /// servers that under-report, not for negotiated over-fetching. Defaults
+    /// to `false`, preserving the strict-budget contract.
+    pub truncate_overrun: bool,
 }
 
 impl Default for UrlPolicy {
@@ -315,6 +322,7 @@ impl Default for UrlPolicy {
             budget: RequestBudget::default(),
             allow_cross_origin_redirects: false,
             allow_private_networks: false,
+            truncate_overrun: false,
         }
     }
 }

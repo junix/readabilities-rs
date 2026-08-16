@@ -16,6 +16,10 @@ pub(crate) struct AcquiredPage {
     pub final_url: Url,
     pub snapshot: SnapshotObservations,
     pub stage: StageRecord,
+    /// The response body grew past the byte budget mid-stream and was cut to
+    /// the cap under `UrlPolicy::truncate_overrun` (declared-length overruns
+    /// reject before this can happen).
+    pub truncated_by_bytes: bool,
 }
 
 pub(crate) async fn fetch_origin(
@@ -39,15 +43,21 @@ pub(crate) async fn fetch_origin(
             )
             .with_retry(RetryAdvice::IncreaseBudget)
         })?
-        .map(|(html, final_url, encoding, decode_errors)| AcquiredPage {
+        .map(|(html, final_url, encoding, decode_errors, truncated)| AcquiredPage {
             html,
             final_url,
+            truncated_by_bytes: truncated,
             snapshot: SnapshotObservations::static_html(SnapshotKind::OriginResponse),
             stage: StageRecord {
                 stage: Stage::Acquire,
                 backend: Backend::Origin,
                 elapsed_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
-                detail: if decode_errors {
+                detail: if truncated {
+                    format!(
+                        "origin body exceeded the byte budget and was truncated to {} bytes",
+                        policy.budget.max_download_bytes
+                    )
+                } else if decode_errors {
                     format!(
                         "origin HTML fetched within limits; invalid {encoding} sequences were replaced"
                     )
@@ -66,7 +76,7 @@ async fn fetch_loop(
     initial_url: &Url,
     policy: &UrlPolicy,
     cost: &mut CostLedger,
-) -> Result<(String, Url, &'static str, bool)> {
+) -> Result<(String, Url, &'static str, bool, bool)> {
     let initial_origin = origin(initial_url);
     let mut current = initial_url.clone();
     let mut redirects = 0_u8;
@@ -157,6 +167,7 @@ async fn fetch_loop(
 
         let mut bytes = Vec::new();
         let mut stream = response.bytes_stream();
+        let mut truncated_by_bytes = false;
         while let Some(chunk) = stream.next().await {
             let chunk = chunk.map_err(|error| {
                 ReadError::new(
@@ -169,22 +180,40 @@ async fn fetch_loop(
             })?;
             let next_len = bytes.len().saturating_add(chunk.len());
             if next_len > policy.budget.max_download_bytes {
-                return Err(ReadError::new(
-                    ErrorKind::BudgetExceeded,
-                    Stage::Acquire,
-                    Backend::Origin,
-                    format!(
-                        "download exceeded byte budget {}",
-                        policy.budget.max_download_bytes
-                    ),
-                )
-                .with_retry(RetryAdvice::IncreaseBudget));
+                if !policy.truncate_overrun {
+                    return Err(ReadError::new(
+                        ErrorKind::BudgetExceeded,
+                        Stage::Acquire,
+                        Backend::Origin,
+                        format!(
+                            "download exceeded byte budget {}",
+                            policy.budget.max_download_bytes
+                        ),
+                    )
+                    .with_retry(RetryAdvice::IncreaseBudget));
+                }
+                // Bounded usable prefix for an under-reporting server (dsh
+                // readCapped): fill exactly to the cap, drop the rest, stop
+                // reading. Only DROPPED bytes count as truncation — a chunk
+                // that exactly fills the remaining capacity keeps all its
+                // bytes and reads on to observe EOF, so an exactly-at-cap
+                // body is never flagged.
+                let remaining = policy.budget.max_download_bytes - bytes.len();
+                bytes.extend_from_slice(&chunk[..remaining]);
+                truncated_by_bytes = true;
+                break;
             }
             bytes.extend_from_slice(&chunk);
         }
         cost.downloaded_bytes = cost.downloaded_bytes.saturating_add(bytes.len());
         let decoded = crate::charset::decode_html(content_type.as_deref(), &bytes);
-        return Ok((decoded.html, current, decoded.encoding, decoded.had_errors));
+        return Ok((
+            decoded.html,
+            current,
+            decoded.encoding,
+            decoded.had_errors,
+            truncated_by_bytes,
+        ));
     }
 }
 
