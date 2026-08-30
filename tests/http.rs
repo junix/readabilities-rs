@@ -263,13 +263,22 @@ async fn exactly_at_cap_body_is_not_flagged_truncated() {
         ..UrlPolicy::default()
     };
 
-    let article = Reader::new().read_url(&url, &policy).await.unwrap();
+    let execution = execute_with_policy(&url, policy).await;
+    let article = match &execution.outcome {
+        ExecutionOutcome::Success(article) => article,
+        ExecutionOutcome::Failure(error) => panic!("an at-cap body must succeed: {error}"),
+    };
     assert!(
         article
             .warnings
             .iter()
             .all(|warning| warning.code != "byte_truncated")
     );
+    // EOF was reached without dropping a byte: the whole body was delivered.
+    assert!(article.content.contains("REQUIRED-HTTP"));
+    // The read is charged exactly the cap, not the cap plus a probe byte.
+    assert_eq!(execution.cost.downloaded_bytes, body.len());
+    assert_eq!(execution.cost.origin_requests, 1);
 }
 
 #[tokio::test]
