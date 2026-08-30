@@ -189,9 +189,26 @@ async fn origin_http_decodes_declared_non_utf8_html_before_extraction() {
         ..UrlPolicy::default()
     };
 
-    let article = Reader::new().read_url(&url, &policy).await.unwrap();
+    let execution = execute_with_policy(&url, policy).await;
+    let article = match &execution.outcome {
+        ExecutionOutcome::Success(article) => article,
+        ExecutionOutcome::Failure(error) => panic!("the declared encoding must decode: {error}"),
+    };
     assert!(article.content.contains("caf\u{e9}"), "{}", article.content);
     assert!(!article.content.contains('\u{fffd}'), "{}", article.content);
+    // The acquire stage records which legacy encoding actually decoded the body.
+    let acquire = execution
+        .stages
+        .iter()
+        .find(|stage| stage.stage == Stage::Acquire)
+        .expect("the acquire stage must be recorded");
+    assert_eq!(
+        acquire.detail,
+        "origin HTML fetched within redirect, byte, and deadline limits; decoded as windows-1252"
+    );
+    // The full legacy body is charged once it is read to EOF.
+    assert_eq!(execution.cost.downloaded_bytes, html.len());
+    assert_eq!(execution.cost.origin_requests, 1);
 }
 
 fn undelimited_html_body(prefix_marker: &str, tail_marker: &str) -> Vec<u8> {
@@ -276,6 +293,16 @@ async fn exactly_at_cap_body_is_not_flagged_truncated() {
     );
     // EOF was reached without dropping a byte: the whole body was delivered.
     assert!(article.content.contains("REQUIRED-HTTP"));
+    // A clean UTF-8 read within limits reports the untruncated detail.
+    let acquire = execution
+        .stages
+        .iter()
+        .find(|stage| stage.stage == Stage::Acquire)
+        .expect("the acquire stage must be recorded");
+    assert_eq!(
+        acquire.detail,
+        "origin HTML fetched within redirect, byte, and deadline limits"
+    );
     // The read is charged exactly the cap, not the cap plus a probe byte.
     assert_eq!(execution.cost.downloaded_bytes, body.len());
     assert_eq!(execution.cost.origin_requests, 1);
@@ -334,7 +361,13 @@ async fn redirects_are_followed_manually_and_land_on_the_final_origin_url() {
         ..UrlPolicy::default()
     };
 
-    let article = Reader::new().read_url(&url, &policy).await.unwrap();
+    let execution = execute_with_policy(&url, policy).await;
+    let article = match &execution.outcome {
+        ExecutionOutcome::Success(article) => article,
+        ExecutionOutcome::Failure(error) => {
+            panic!("the redirect chain must land on the article: {error}")
+        }
+    };
     assert!(article.content.contains("REQUIRED-HTTP"));
 
     let requests = requests.lock().unwrap();
@@ -363,6 +396,9 @@ async fn redirects_are_followed_manually_and_land_on_the_final_origin_url() {
         article.provenance.source_url.as_deref(),
         Some(final_url.as_str())
     );
+    // The followed hop is charged: two requests, one full body downloaded.
+    assert_eq!(execution.cost.origin_requests, 2);
+    assert_eq!(execution.cost.downloaded_bytes, body.len());
 }
 
 #[tokio::test]
@@ -566,6 +602,14 @@ async fn http_status_failures_map_to_typed_error_kinds_and_retry_advice() {
             RetryAdvice::RetrySameBackend,
         ),
         (404, "Not Found", ErrorKind::OriginHttp, RetryAdvice::Never),
+        // Any other status falls through to the generic terminal mapping.
+        (
+            400,
+            "Bad Request",
+            ErrorKind::OriginHttp,
+            RetryAdvice::Never,
+        ),
+        (410, "Gone", ErrorKind::OriginHttp, RetryAdvice::Never),
     ] {
         let (url, requests) = serve_sequence(vec![
             format!("HTTP/1.1 {status} {reason}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
@@ -687,5 +731,249 @@ async fn truncation_charges_exactly_the_budgeted_bytes_and_records_the_stage() {
     assert_eq!(
         acquire.detail,
         "origin body exceeded the byte budget and was truncated to 256 bytes"
+    );
+}
+
+#[tokio::test]
+async fn connection_refusal_is_an_origin_http_error_charging_exactly_one_request() {
+    // Port 9 (discard) accepts nothing: the TCP connect itself fails, so the
+    // transport-failure mapping is exercised without a server.
+    let url = Url::parse("http://127.0.0.1:9/article").unwrap();
+    let policy = UrlPolicy {
+        allow_private_networks: true,
+        ..UrlPolicy::default()
+    };
+
+    let execution = execute_with_policy(&url, policy).await;
+    let error = expect_failure(&execution);
+    assert_eq!(error.kind, ErrorKind::OriginHttp);
+    assert_eq!(error.stage, Stage::Acquire);
+    // Transport failures are retryable on the same backend.
+    assert_eq!(error.retry, RetryAdvice::RetrySameBackend);
+    assert!(
+        error.message.contains("error sending request"),
+        "{}",
+        error.message
+    );
+    // The attempt was charged, but no bytes were ever downloaded.
+    assert_eq!(execution.cost.origin_requests, 1);
+    assert_eq!(execution.cost.downloaded_bytes, 0);
+    // The failed attempt is ledgered with its cause before extraction runs.
+    assert_eq!(execution.stages.len(), 1);
+    assert_eq!(execution.stages[0].stage, Stage::Acquire);
+    assert_eq!(
+        execution.stages[0].detail,
+        format!("acquisition attempt failed: {}", error.message)
+    );
+}
+
+#[tokio::test]
+async fn unparseable_redirect_location_is_rejected_without_a_second_request() {
+    let (url, requests) = serve_sequence(vec![redirect_response("http://[")]);
+    let policy = UrlPolicy {
+        allow_private_networks: true,
+        ..UrlPolicy::default()
+    };
+
+    let error = Reader::new().read_url(&url, &policy).await.unwrap_err();
+    assert_eq!(error.kind, ErrorKind::OriginHttp);
+    assert_eq!(
+        error.message,
+        "invalid redirect target: invalid IPv6 address"
+    );
+    // The unusable target is never contacted.
+    assert_eq!(requests.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn invalid_utf8_bodies_report_replaced_sequences_in_the_stage_detail() {
+    let mut html = b"<html><body><article><h1>Encoding</h1><p>REQUIRED-HTTP: ".to_vec();
+    html.extend_from_slice(b"caf\xe9 and an invalid \xff byte");
+    html.extend_from_slice(b" survive decoding lossily.</p></article></body></html>");
+    let mut response =
+        b"HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nConnection: close\r\n\r\n"
+            .to_vec();
+    response.extend_from_slice(&html);
+    let url = serve_bytes(response);
+    let policy = UrlPolicy {
+        allow_private_networks: true,
+        ..UrlPolicy::default()
+    };
+
+    let execution = execute_with_policy(&url, policy).await;
+    let article = match &execution.outcome {
+        ExecutionOutcome::Success(article) => article,
+        ExecutionOutcome::Failure(error) => panic!("lossy decoding must still extract: {error}"),
+    };
+    assert!(article.content.contains("REQUIRED-HTTP"));
+    assert!(article.content.contains('\u{fffd}'), "{}", article.content);
+    // Undecodable sequences are surfaced on the acquire record, not swallowed.
+    let acquire = execution
+        .stages
+        .iter()
+        .find(|stage| stage.stage == Stage::Acquire)
+        .expect("the acquire stage must be recorded");
+    assert_eq!(
+        acquire.detail,
+        "origin HTML fetched within limits; invalid UTF-8 sequences were replaced"
+    );
+}
+
+#[tokio::test]
+async fn localhost_hostnames_resolve_and_remain_denied_by_default() {
+    // A DNS name (not a literal) still routes through network validation:
+    // resolving to a loopback address keeps the default deny.
+    let url = Url::parse("http://localhost/article").unwrap();
+
+    let execution = Reader::new().execute(ReadRequest::url(url)).await;
+    let error = expect_failure(&execution);
+    assert_eq!(error.kind, ErrorKind::InvalidInput);
+    assert_eq!(error.stage, Stage::Validate);
+    assert!(
+        error.message.contains("denied by default"),
+        "{}",
+        error.message
+    );
+    // The refusal is ledgered as one failed acquisition attempt that never
+    // downloaded a byte.
+    assert_eq!(execution.cost.origin_requests, 1);
+    assert_eq!(execution.cost.downloaded_bytes, 0);
+    assert_eq!(execution.stages.len(), 1);
+    assert_eq!(execution.stages[0].stage, Stage::Acquire);
+    assert_eq!(
+        execution.stages[0].detail,
+        format!("acquisition attempt failed: {}", error.message)
+    );
+}
+
+#[tokio::test]
+async fn explicit_fallback_success_is_degraded_and_fully_ledgered() {
+    let html = "<html><body><article><h1>Fallback</h1><p>REQUIRED-HTTP: the explicitly authorized fallback acquisition delivers the article.</p></article></body></html>";
+    let (url, requests) = serve_sequence(vec![
+        b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec(),
+        html_response(html),
+    ]);
+    let policy = UrlPolicy {
+        allow_private_networks: true,
+        fallbacks: vec![readabilities_rs::Acquisition::Origin],
+        ..UrlPolicy::default()
+    };
+
+    let execution = execute_with_policy(&url, policy).await;
+    let article = match &execution.outcome {
+        ExecutionOutcome::Success(article) => article,
+        ExecutionOutcome::Failure(error) => panic!("the fallback must deliver: {error}"),
+    };
+    assert!(article.content.contains("REQUIRED-HTTP"));
+    // A fallback result is never presented as a pristine origin read.
+    assert!(article.provenance.degraded);
+    let fallback_warnings: Vec<_> = article
+        .warnings
+        .iter()
+        .filter(|warning| warning.code == "acquisition_fallback")
+        .collect();
+    assert_eq!(
+        fallback_warnings.len(),
+        1,
+        "the fallback must be reported exactly once: {:?}",
+        article.warnings
+    );
+    assert_eq!(
+        fallback_warnings[0].message,
+        "selected explicit fallback acquisition origin"
+    );
+
+    // Both requests were spent; only the successful body is charged.
+    assert_eq!(execution.cost.origin_requests, 2);
+    assert_eq!(execution.cost.downloaded_bytes, html.len());
+    assert_eq!(requests.lock().unwrap().len(), 2);
+
+    // The failed primary and the selected fallback are ledgered in order.
+    assert_eq!(execution.attempts[0].engine, "acquire:origin");
+    assert!(!execution.attempts[0].selected);
+    assert_eq!(
+        execution.attempts[0].failure.as_deref(),
+        Some("origin returned HTTP 404 Not Found")
+    );
+    assert_eq!(execution.attempts[1].engine, "acquire:origin");
+    assert!(execution.attempts[1].selected);
+    assert_eq!(execution.attempts[1].failure, None);
+    assert_eq!(
+        execution.stages[0].detail,
+        "acquisition attempt failed: origin returned HTTP 404 Not Found"
+    );
+    assert_eq!(
+        execution.stages[1].detail,
+        "origin HTML fetched within redirect, byte, and deadline limits"
+    );
+}
+
+#[tokio::test]
+async fn exhausted_fallbacks_surface_the_last_error_with_the_complete_ledger() {
+    let (url, requests) = serve_sequence(vec![
+        b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            .to_vec(),
+        b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            .to_vec(),
+    ]);
+    let policy = UrlPolicy {
+        allow_private_networks: true,
+        fallbacks: vec![readabilities_rs::Acquisition::Origin],
+        ..UrlPolicy::default()
+    };
+
+    let execution = execute_with_policy(&url, policy).await;
+    let error = expect_failure(&execution);
+    assert_eq!(error.kind, ErrorKind::OriginHttp);
+    assert_eq!(error.retry, RetryAdvice::RetrySameBackend);
+    assert_eq!(
+        error.message,
+        "origin returned HTTP 500 Internal Server Error"
+    );
+    // Every acquisition attempt is ledgered; no extraction attempt ever ran.
+    assert_eq!(execution.attempts.len(), 2);
+    assert!(
+        execution
+            .attempts
+            .iter()
+            .all(|attempt| attempt.engine == "acquire:origin"
+                && !attempt.selected
+                && attempt.failure.as_deref()
+                    == Some("origin returned HTTP 500 Internal Server Error"))
+    );
+    assert_eq!(execution.stages.len(), 2);
+    assert!(execution
+        .stages
+        .iter()
+        .all(|stage| stage.stage == Stage::Acquire
+            && stage.detail
+                == "acquisition attempt failed: origin returned HTTP 500 Internal Server Error"));
+    // The terminal error carries the completed attempts for callers that only
+    // take the Result.
+    assert_eq!(error.completed_attempts.len(), 2);
+    assert_eq!(execution.cost.origin_requests, 2);
+    assert_eq!(requests.lock().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn zero_deadline_is_rejected_before_any_request() {
+    // The other operand of the budget precondition: a zero deadline is
+    // refused up front. Port 9 (discard) has nothing listening, so an
+    // InvalidInput here proves validation preceded any connection.
+    let url = Url::parse("http://127.0.0.1:9/article").unwrap();
+    let policy = UrlPolicy {
+        budget: readabilities_rs::RequestBudget {
+            deadline: Duration::ZERO,
+            ..readabilities_rs::RequestBudget::default()
+        },
+        ..UrlPolicy::default()
+    };
+
+    let error = Reader::new().read_url(&url, &policy).await.unwrap_err();
+    assert_eq!(error.kind, ErrorKind::InvalidInput);
+    assert_eq!(error.stage, Stage::Validate);
+    assert_eq!(
+        error.message,
+        "deadline and max_download_bytes must be positive"
     );
 }

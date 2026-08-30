@@ -449,6 +449,12 @@ mod tests {
             let url = Url::parse(raw).unwrap();
             let error = validate_network_target(&url, false).await.unwrap_err();
             assert_eq!(error.kind, ErrorKind::InvalidInput, "{raw}");
+            assert_eq!(error.stage, Stage::Validate, "{raw}");
+            assert!(
+                error.message.contains("denied by default"),
+                "{raw}: {}",
+                error.message
+            );
         }
     }
 
@@ -466,6 +472,8 @@ mod tests {
         let target = Url::parse("https://other.test/b").unwrap();
         let error = validate_redirect(&target, &origin(&start), false).unwrap_err();
         assert_eq!(error.kind, ErrorKind::OriginHttp);
+        assert_eq!(error.message, "cross-origin redirect denied by policy");
+        assert_eq!(error.retry, RetryAdvice::ChooseAnotherBackend);
     }
 
     #[test]
