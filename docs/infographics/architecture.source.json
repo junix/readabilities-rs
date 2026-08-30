@@ -1,12 +1,12 @@
 {
-  "schema_version": "repository-architecture-infographic/v1",
+  "schema_version": "repository-architecture-infographic/v2",
   "meta": {
     "project": "readabilities-rs",
-    "snapshot": "930f126a4",
-    "generated": "2026-08-26",
+    "snapshot": "8773c7a8a",
+    "generated": "2026-08-30",
     "language": "zh-CN",
     "audience": "新贡献者、架构评审者与下游集成方",
-    "thesis": "把仓库的真实入口、实现分区、可执行用法与验证证据放在一条可回查的阅读路径上。",
+    "thesis": "把仓库的真实入口、实现分区、真实依赖与验证证据放在一条可回查的阅读路径上。",
     "canonical_source": "docs/infographics/architecture.svg"
   },
   "narrative": {
@@ -18,13 +18,13 @@
       "规模与依赖",
       "验证与溯源"
     ],
-    "inference_policy": "文件、计数、命令与依赖是仓库事实；职责名称仅按路径命名归类，均显式标注为推断。"
+    "inference_policy": "文件、计数、命令、依赖与最近提交是仓库事实；职责名称仅按路径命名归类，均显式标注为推断。"
   },
   "sources": {
     "readme": "README.md",
     "readme_excerpt": [
-      "readabilities-rs is a local-first readable-content engine. Its primary job is to identify the main document, remove navigation/ads/related-content noise, preserve meaningful structure, and enforce a final HTML security boundary. Markdown and text are renderings of that cleaned article; they are not used to decide what the article is.",
-      "Every build uses the native Rust pipeline and does not require Python, Node, Chrome, a PaaS CLI, or another executable. HTML input never accesses the network. URL acquisition talks directly to the requested origin over HTTP; the crate never submits a URL or page content to a managed extraction provider."
+      "The native extraction pipeline uses the Defuddle source tree as its readability behavioral reference. Selected low-level parsing behaviors are also adapted from Crawlberg, including document-base resolution, JSON-LD metadata fallback, and raw-byte charset detection. The crate still owns its Rust implementation and runtime; these projects and other engines ar",
+      "readabilities-rs is a local-first readable-content engine. Its primary job is to identify the main document, remove navigation/ads/related-content noise, preserve meaningful structure, and enforce a final HTML security boundary. Markdown and text are renderings of that cleaned article; they are not used to decide what the article is."
     ],
     "manifests": [
       "Cargo.toml",
@@ -33,11 +33,12 @@
     "tracked_file_formula": "git ls-files，排除构建/依赖目录",
     "line_formula": "逐个已跟踪源码文件统计非空文本行；不等同于语句数或复杂度",
     "component_formula": "按源码路径首个职责分区聚合；角色名由路径关键词推断",
-    "entrypoint_formula": "按常见入口文件名与 bin/cmd/cli/app 路径定位候选；路径存在是事实，入口职责仍需源码确认"
+    "entrypoint_formula": "按常见入口文件名与 bin/cmd/cli/app 路径定位候选；路径存在是事实，入口职责仍需源码确认",
+    "edge_formula": "在分区代表源码中静态匹配 import/use/mod/require 与相对路径引用；只绘制两端都能定位的边"
   },
   "facts": {
-    "description": "readabilities-rs is a local-first readable-content engine. Its primary job is to identify the main document, remove navigation/ads/related-content noise, preserve meaningful structure, and enforce a final HTML security boundary. Markdown and text are renderings of that cleaned article; they are not used to decide what the article is.",
-    "tracked_files": 48,
+    "description": "The native extraction pipeline uses the Defuddle source tree as its readability behavioral reference. Selected low-level parsing behaviors are also adapted from Crawlberg, including document-base resolution, JSON-LD metadata fallback, and raw-byte charset detection. The crate still owns its Rust implementation and runtime; these projects and other engines ar",
+    "tracked_files": 55,
     "source_files": 20,
     "source_nonblank_lines": 5238,
     "languages": [
@@ -65,26 +66,6 @@
           "src/native.rs",
           "src/engine.rs",
           "src/reader.rs"
-        ]
-      },
-      {
-        "id": "component-2",
-        "label": "examples",
-        "role": "实现分区",
-        "file_count": 1,
-        "nonblank_lines": 182,
-        "examples": [
-          "examples/extraction_benchmark.rs"
-        ]
-      },
-      {
-        "id": "component-3",
-        "label": "src/core",
-        "role": "核心语义",
-        "file_count": 1,
-        "nonblank_lines": 1,
-        "examples": [
-          "src/core/mod.rs"
         ]
       }
     ],
@@ -114,6 +95,20 @@
       "just build-release",
       "just test-verbose",
       "cargo build --locked"
+    ],
+    "recent_commits": [
+      {
+        "date": "2026-08-29",
+        "subject": "docs: 更新架构文档"
+      },
+      {
+        "date": "2026-08-29",
+        "subject": "docs: 架构文档英文内容翻译为中文"
+      },
+      {
+        "date": "2026-08-26",
+        "subject": "docs: relocate architecture infographic to docs/infographics"
+      }
     ],
     "test_files": 15,
     "test_examples": [
