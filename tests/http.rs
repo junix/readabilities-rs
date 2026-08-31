@@ -956,6 +956,228 @@ async fn exhausted_fallbacks_surface_the_last_error_with_the_complete_ledger() {
 }
 
 #[tokio::test]
+async fn declared_length_at_the_cap_passes_and_one_byte_over_is_rejected() {
+    // The declared gate is strictly greater-than: an honest Content-Length
+    // exactly at the budget must sail through, while one extra byte is
+    // refused before a single body byte is read.
+    let body = "<html><body><article><p>REQUIRED-HTTP: exactly the negotiated size.</p></article></body></html>";
+    let at_cap = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let url = serve_once(at_cap);
+    let policy = UrlPolicy {
+        allow_private_networks: true,
+        budget: readabilities_rs::RequestBudget {
+            max_download_bytes: body.len(),
+            ..readabilities_rs::RequestBudget::default()
+        },
+        ..UrlPolicy::default()
+    };
+
+    let execution = execute_with_policy(&url, policy).await;
+    let article = match &execution.outcome {
+        ExecutionOutcome::Success(article) => article,
+        ExecutionOutcome::Failure(error) => panic!("an at-cap declared length must pass: {error}"),
+    };
+    assert!(article.content.contains("REQUIRED-HTTP"));
+    assert!(
+        article
+            .warnings
+            .iter()
+            .all(|warning| warning.code != "byte_truncated")
+    );
+    assert_eq!(execution.cost.downloaded_bytes, body.len());
+    assert_eq!(execution.cost.origin_requests, 1);
+
+    // One byte over the cap: refused at the declared-length gate, so no body
+    // byte is ever read or charged.
+    let over = format!("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}x", body.len() + 1);
+    let url = serve_once(over);
+    let policy = UrlPolicy {
+        allow_private_networks: true,
+        budget: readabilities_rs::RequestBudget {
+            max_download_bytes: body.len(),
+            ..readabilities_rs::RequestBudget::default()
+        },
+        ..UrlPolicy::default()
+    };
+
+    let execution = execute_with_policy(&url, policy).await;
+    let error = expect_failure(&execution);
+    assert_eq!(error.kind, ErrorKind::BudgetExceeded);
+    assert_eq!(error.retry, RetryAdvice::IncreaseBudget);
+    assert_eq!(error.stage, Stage::Acquire);
+    assert_eq!(
+        error.message,
+        format!(
+            "Content-Length {} exceeds byte budget {}",
+            body.len() + 1,
+            body.len()
+        )
+    );
+    // The refused request is charged, but not one byte of the body.
+    assert_eq!(execution.cost.origin_requests, 1);
+    assert_eq!(execution.cost.downloaded_bytes, 0);
+    assert_eq!(execution.stages.len(), 1);
+    assert_eq!(
+        execution.stages[0].detail,
+        format!("acquisition attempt failed: {}", error.message)
+    );
+}
+
+#[tokio::test]
+async fn prematurely_closed_body_is_a_transport_error_charging_no_bytes() {
+    // The server declares 512 bytes but closes after a short prefix: the
+    // stream errors mid-read and the partial bytes must never be charged.
+    let url = serve_bytes(
+        b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 512\r\nConnection: close\r\n\r\nshort prefix"
+            .to_vec(),
+    );
+    let policy = UrlPolicy {
+        allow_private_networks: true,
+        ..UrlPolicy::default()
+    };
+
+    let execution = execute_with_policy(&url, policy).await;
+    let error = expect_failure(&execution);
+    assert_eq!(error.kind, ErrorKind::OriginHttp);
+    assert_eq!(error.retry, RetryAdvice::RetrySameBackend);
+    assert_eq!(error.stage, Stage::Acquire);
+    assert!(
+        error.message.contains("error decoding response body"),
+        "{}",
+        error.message
+    );
+    // The attempt is ledgered, but the partial prefix is not charged: the
+    // byte counter only moves after a clean read to EOF.
+    assert_eq!(execution.cost.origin_requests, 1);
+    assert_eq!(execution.cost.downloaded_bytes, 0);
+    assert_eq!(execution.stages.len(), 1);
+    assert_eq!(
+        execution.stages[0].detail,
+        format!("acquisition attempt failed: {}", error.message)
+    );
+}
+
+#[tokio::test]
+async fn error_status_bodies_are_rejected_without_being_downloaded() {
+    // A 500 with a real body is terminal at the status gate: the body is
+    // never read, so not one of its bytes lands in the ledger.
+    let (url, _requests) = serve_sequence(vec![
+        b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 24\r\nConnection: close\r\n\r\ninternal failure detail"
+            .to_vec(),
+    ]);
+    let policy = UrlPolicy {
+        allow_private_networks: true,
+        ..UrlPolicy::default()
+    };
+
+    let execution = execute_with_policy(&url, policy).await;
+    let error = expect_failure(&execution);
+    assert_eq!(error.kind, ErrorKind::OriginHttp);
+    assert_eq!(error.retry, RetryAdvice::RetrySameBackend);
+    assert_eq!(
+        error.message,
+        "origin returned HTTP 500 Internal Server Error"
+    );
+    assert_eq!(execution.cost.origin_requests, 1);
+    assert_eq!(execution.cost.downloaded_bytes, 0);
+}
+
+#[tokio::test]
+async fn the_last_allowed_redirect_hop_may_still_land_the_article() {
+    // Spending the entire redirect budget is legal: the gate only fires when
+    // the response AFTER the final allowed hop is itself a redirect.
+    let body = "<html><body><article><p>REQUIRED-HTTP: landed on the last allowed hop.</p></article></body></html>";
+    let (url, requests) = serve_sequence(vec![
+        redirect_response("/hop1"),
+        redirect_response("/hop2"),
+        html_response(body),
+    ]);
+    let policy = UrlPolicy {
+        allow_private_networks: true,
+        budget: readabilities_rs::RequestBudget {
+            max_redirects: 2,
+            ..readabilities_rs::RequestBudget::default()
+        },
+        ..UrlPolicy::default()
+    };
+
+    let execution = execute_with_policy(&url, policy).await;
+    let article = match &execution.outcome {
+        ExecutionOutcome::Success(article) => article,
+        ExecutionOutcome::Failure(error) => panic!("the last hop must land: {error}"),
+    };
+    assert!(article.content.contains("REQUIRED-HTTP"));
+    let final_url = url.join("/hop2").unwrap();
+    assert_eq!(
+        article.provenance.source_url.as_deref(),
+        Some(final_url.as_str())
+    );
+    // The whole chain was spent and charged.
+    assert_eq!(requests.lock().unwrap().len(), 3);
+    assert_eq!(execution.cost.origin_requests, 3);
+    assert_eq!(execution.cost.downloaded_bytes, body.len());
+}
+
+#[tokio::test]
+async fn a_single_request_succeeds_at_the_origin_request_budget_cap() {
+    // The request gate is `spent >= max`: a budget of one must still admit
+    // the very first request, not reject it before it is sent.
+    let body = "<html><body><article><p>REQUIRED-HTTP: one request, one budget slot.</p></article></body></html>";
+    let (url, requests) = serve_sequence(vec![html_response(body)]);
+    let policy = UrlPolicy {
+        allow_private_networks: true,
+        budget: readabilities_rs::RequestBudget {
+            max_origin_requests: 1,
+            ..readabilities_rs::RequestBudget::default()
+        },
+        ..UrlPolicy::default()
+    };
+
+    let execution = execute_with_policy(&url, policy).await;
+    let article = match &execution.outcome {
+        ExecutionOutcome::Success(article) => article,
+        ExecutionOutcome::Failure(error) => panic!("a budget of one must admit one request: {error}"),
+    };
+    assert!(article.content.contains("REQUIRED-HTTP"));
+    assert_eq!(requests.lock().unwrap().len(), 1);
+    assert_eq!(execution.cost.origin_requests, 1);
+    assert_eq!(execution.cost.downloaded_bytes, body.len());
+}
+
+#[tokio::test]
+async fn dns_failure_for_a_domain_is_one_retryable_charged_attempt() {
+    // `.invalid` never resolves (RFC 6761): the lookup error must surface as
+    // a typed, retryable acquisition failure with no bytes downloaded.
+    let url = Url::parse("http://readabilities-nonexistent.invalid/article").unwrap();
+    let policy = UrlPolicy {
+        allow_private_networks: true,
+        ..UrlPolicy::default()
+    };
+
+    let execution = execute_with_policy(&url, policy).await;
+    let error = expect_failure(&execution);
+    assert_eq!(error.kind, ErrorKind::OriginHttp);
+    assert_eq!(error.retry, RetryAdvice::RetrySameBackend);
+    assert_eq!(error.stage, Stage::Acquire);
+    assert!(
+        error.message.starts_with("DNS lookup failed:"),
+        "{}",
+        error.message
+    );
+    // The request slot was already spent when the lookup failed.
+    assert_eq!(execution.cost.origin_requests, 1);
+    assert_eq!(execution.cost.downloaded_bytes, 0);
+    assert_eq!(execution.stages.len(), 1);
+    assert_eq!(
+        execution.stages[0].detail,
+        format!("acquisition attempt failed: {}", error.message)
+    );
+}
+
+#[tokio::test]
 async fn zero_deadline_is_rejected_before_any_request() {
     // The other operand of the budget precondition: a zero deadline is
     // refused up front. Port 9 (discard) has nothing listening, so an
