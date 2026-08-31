@@ -228,6 +228,46 @@ fn undelimited_html_body(prefix_marker: &str, tail_marker: &str) -> Vec<u8> {
 }
 
 #[tokio::test]
+async fn absent_content_type_falls_back_to_the_in_body_meta_charset() {
+    // No Content-Type header at all: the encoding must come from the first
+    // 2 KiB of the body itself, not from a default UTF-8 guess.
+    let mut html = b"<html><head><meta charset=\"iso-8859-1\"></head><body><article><h1>Encoding</h1><p>REQUIRED-HTTP: caf\xe9 decoded from the in-body declaration.</p></article></body></html>".to_vec();
+    let body_len = html.len();
+    let mut response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body_len
+    )
+    .into_bytes();
+    response.append(&mut html);
+    let url = serve_bytes(response);
+    let policy = UrlPolicy {
+        allow_private_networks: true,
+        ..UrlPolicy::default()
+    };
+
+    let execution = execute_with_policy(&url, policy).await;
+    let article = match &execution.outcome {
+        ExecutionOutcome::Success(article) => article,
+        ExecutionOutcome::Failure(error) => panic!("the meta charset must decode: {error}"),
+    };
+    assert!(article.content.contains("REQUIRED-HTTP"), "{}", article.content);
+    assert!(article.content.contains("caf\u{e9}"), "{}", article.content);
+    assert!(!article.content.contains('\u{fffd}'), "{}", article.content);
+    // The acquire record names the encoding the meta declaration resolved to.
+    let acquire = execution
+        .stages
+        .iter()
+        .find(|stage| stage.stage == Stage::Acquire)
+        .expect("the acquire stage must be recorded");
+    assert_eq!(
+        acquire.detail,
+        "origin HTML fetched within redirect, byte, and deadline limits; decoded as windows-1252"
+    );
+    assert_eq!(execution.cost.downloaded_bytes, body_len);
+    assert_eq!(execution.cost.origin_requests, 1);
+}
+
+#[tokio::test]
 async fn streaming_overrun_with_truncate_yields_bounded_prefix_and_warning() {
     let url = serve_bytes(undelimited_html_body(
         "bounded prefix survives",
@@ -1086,6 +1126,46 @@ async fn error_status_bodies_are_rejected_without_being_downloaded() {
 }
 
 #[tokio::test]
+async fn an_empty_200_body_fails_extraction_with_the_acquisition_still_ledgered() {
+    // Acquisition succeeds on an empty body; the failure belongs to the
+    // extraction stage, and the successful fetch must remain in the ledger.
+    let (url, requests) = serve_sequence(vec![
+        b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec(),
+    ]);
+    let policy = UrlPolicy {
+        allow_private_networks: true,
+        ..UrlPolicy::default()
+    };
+
+    let execution = execute_with_policy(&url, policy).await;
+    let error = expect_failure(&execution);
+    assert_eq!(error.kind, ErrorKind::InvalidInput);
+    assert_eq!(error.stage, Stage::Validate);
+    assert_eq!(error.message, "HTML input is empty");
+    // The fetch itself succeeded: one request, zero body bytes, and the
+    // acquire stage records the clean read that produced the empty body.
+    assert_eq!(execution.cost.origin_requests, 1);
+    assert_eq!(execution.cost.downloaded_bytes, 0);
+    assert_eq!(requests.lock().unwrap().len(), 1);
+    assert_eq!(execution.stages.len(), 1);
+    assert_eq!(execution.stages[0].stage, Stage::Acquire);
+    assert_eq!(
+        execution.stages[0].detail,
+        "origin HTML fetched within redirect, byte, and deadline limits"
+    );
+    // The acquisition attempt is kept, but marked unselected with the
+    // extraction failure as its cause.
+    assert_eq!(execution.attempts.len(), 1);
+    assert_eq!(execution.attempts[0].engine, "acquire:origin");
+    assert!(!execution.attempts[0].selected);
+    assert_eq!(
+        execution.attempts[0].failure.as_deref(),
+        Some("HTML input is empty")
+    );
+    assert_eq!(error.completed_attempts.len(), 1);
+}
+
+#[tokio::test]
 async fn the_last_allowed_redirect_hop_may_still_land_the_article() {
     // Spending the entire redirect budget is legal: the gate only fires when
     // the response AFTER the final allowed hop is itself a redirect.
@@ -1119,6 +1199,34 @@ async fn the_last_allowed_redirect_hop_may_still_land_the_article() {
     assert_eq!(requests.lock().unwrap().len(), 3);
     assert_eq!(execution.cost.origin_requests, 3);
     assert_eq!(execution.cost.downloaded_bytes, body.len());
+}
+
+#[tokio::test]
+async fn a_zero_redirect_budget_rejects_the_first_redirect_without_following() {
+    // The redirect budget counts followed hops: with a budget of zero, the
+    // very first redirect response is refused and never dereferenced.
+    let (url, requests) = serve_sequence(vec![
+        redirect_response("/moved"),
+        html_response("<html><body><article><p>never reached</p></article></body></html>"),
+    ]);
+    let policy = UrlPolicy {
+        allow_private_networks: true,
+        budget: readabilities_rs::RequestBudget {
+            max_redirects: 0,
+            ..readabilities_rs::RequestBudget::default()
+        },
+        ..UrlPolicy::default()
+    };
+
+    let execution = execute_with_policy(&url, policy).await;
+    let error = expect_failure(&execution);
+    assert_eq!(error.kind, ErrorKind::BudgetExceeded);
+    assert_eq!(error.retry, RetryAdvice::IncreaseBudget);
+    assert_eq!(error.stage, Stage::Acquire);
+    assert_eq!(error.message, "redirect budget exhausted");
+    // The initial request was sent and charged; the target was not followed.
+    assert_eq!(execution.cost.origin_requests, 1);
+    assert_eq!(requests.lock().unwrap().len(), 1);
 }
 
 #[tokio::test]
