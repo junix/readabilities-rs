@@ -360,10 +360,21 @@ async fn streaming_overrun_without_truncate_keeps_the_strict_budget_contract() {
         ..UrlPolicy::default()
     };
 
-    let error = Reader::new().read_url(&url, &policy).await.unwrap_err();
+    let execution = execute_with_policy(&url, policy).await;
+    let error = expect_failure(&execution);
     assert_eq!(error.kind, ErrorKind::BudgetExceeded);
     assert_eq!(error.retry, RetryAdvice::IncreaseBudget);
+    assert_eq!(error.stage, Stage::Acquire);
     assert_eq!(error.message, "download exceeded byte budget 256");
+    // The mid-stream rejection charges the request but never the partial
+    // bytes: the counter only moves after a clean read to EOF.
+    assert_eq!(execution.cost.origin_requests, 1);
+    assert_eq!(execution.cost.downloaded_bytes, 0);
+    assert_eq!(execution.stages.len(), 1);
+    assert_eq!(
+        execution.stages[0].detail,
+        format!("acquisition attempt failed: {}", error.message)
+    );
 }
 
 #[tokio::test]
@@ -386,6 +397,7 @@ async fn declared_overrun_still_rejects_even_in_truncate_mode() {
     let error = Reader::new().read_url(&url, &policy).await.unwrap_err();
     assert_eq!(error.kind, ErrorKind::BudgetExceeded);
     assert_eq!(error.retry, RetryAdvice::IncreaseBudget);
+    assert_eq!(error.stage, Stage::Acquire);
     assert_eq!(
         error.message,
         "Content-Length 999999 exceeds byte budget 128"
@@ -461,6 +473,7 @@ async fn redirect_budget_exhaustion_is_a_budget_error_with_no_extra_request() {
     let error = expect_failure(&execution);
     assert_eq!(error.kind, ErrorKind::BudgetExceeded);
     assert_eq!(error.retry, RetryAdvice::IncreaseBudget);
+    assert_eq!(error.stage, Stage::Acquire);
     assert_eq!(error.message, "redirect budget exhausted");
     // Three requests were sent (the initial one plus two followed hops); the
     // hop past the budget is never requested.
@@ -487,6 +500,7 @@ async fn origin_request_budget_gates_the_next_request_before_sending() {
     let error = expect_failure(&execution);
     assert_eq!(error.kind, ErrorKind::BudgetExceeded);
     assert_eq!(error.retry, RetryAdvice::IncreaseBudget);
+    assert_eq!(error.stage, Stage::Acquire);
     assert_eq!(error.message, "origin request budget exhausted");
     assert_eq!(execution.cost.origin_requests, 1);
     // The redirect was accepted but never followed: no second connection.
@@ -505,6 +519,7 @@ async fn redirect_without_a_location_header_is_rejected() {
 
     let error = Reader::new().read_url(&url, &policy).await.unwrap_err();
     assert_eq!(error.kind, ErrorKind::OriginHttp);
+    assert_eq!(error.stage, Stage::Acquire);
     assert_eq!(
         error.message,
         "redirect response omitted a valid Location header"
@@ -522,6 +537,7 @@ async fn redirect_to_a_non_http_scheme_is_rejected() {
 
     let error = Reader::new().read_url(&url, &policy).await.unwrap_err();
     assert_eq!(error.kind, ErrorKind::OriginHttp);
+    assert_eq!(error.stage, Stage::Acquire);
     assert_eq!(error.message, "redirect target must use http or https");
     assert_eq!(requests.lock().unwrap().len(), 1);
 }
@@ -538,6 +554,7 @@ async fn redirect_with_embedded_credentials_is_rejected() {
 
     let error = Reader::new().read_url(&url, &policy).await.unwrap_err();
     assert_eq!(error.kind, ErrorKind::OriginHttp);
+    assert_eq!(error.stage, Stage::Acquire);
     assert_eq!(
         error.message,
         "redirect target contains embedded credentials"
@@ -569,6 +586,7 @@ async fn cross_origin_redirect_is_denied_by_default_and_allowed_when_opted_in() 
         .await
         .unwrap_err();
     assert_eq!(error.kind, ErrorKind::OriginHttp);
+    assert_eq!(error.stage, Stage::Acquire);
     assert_eq!(error.message, "cross-origin redirect denied by policy");
     assert_eq!(error.retry, RetryAdvice::ChooseAnotherBackend);
     assert_eq!(a_requests.lock().unwrap().len(), 1);
@@ -817,6 +835,7 @@ async fn unparseable_redirect_location_is_rejected_without_a_second_request() {
 
     let error = Reader::new().read_url(&url, &policy).await.unwrap_err();
     assert_eq!(error.kind, ErrorKind::OriginHttp);
+    assert_eq!(error.stage, Stage::Acquire);
     assert_eq!(
         error.message,
         "invalid redirect target: invalid IPv6 address"
@@ -1117,6 +1136,7 @@ async fn error_status_bodies_are_rejected_without_being_downloaded() {
     let error = expect_failure(&execution);
     assert_eq!(error.kind, ErrorKind::OriginHttp);
     assert_eq!(error.retry, RetryAdvice::RetrySameBackend);
+    assert_eq!(error.stage, Stage::Acquire);
     assert_eq!(
         error.message,
         "origin returned HTTP 500 Internal Server Error"
