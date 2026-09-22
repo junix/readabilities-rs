@@ -86,4 +86,3 @@ fn ascii_find_case_insensitive(haystack: &[u8], needle: &[u8]) -> Option<usize> 
 #[cfg(test)]
 #[path = "charset_tests.rs"]
 mod tests;
-

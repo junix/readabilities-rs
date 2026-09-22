@@ -416,4 +416,3 @@ fn map_status(status: StatusCode) -> Result<()> {
 #[cfg(test)]
 #[path = "http_tests.rs"]
 mod tests;
-

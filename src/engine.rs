@@ -384,4 +384,3 @@ fn elapsed_ms(started: Instant) -> u64 {
 #[cfg(test)]
 #[path = "engine_tests.rs"]
 mod tests;
-

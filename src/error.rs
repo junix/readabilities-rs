@@ -90,4 +90,3 @@ fn redact(message: &str) -> String {
 #[cfg(test)]
 #[path = "error_tests.rs"]
 mod tests;
-

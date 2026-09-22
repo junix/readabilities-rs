@@ -881,4 +881,3 @@ fn count_words(text: &str) -> usize {
 #[cfg(test)]
 #[path = "native_tests.rs"]
 mod tests;
-

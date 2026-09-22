@@ -476,4 +476,3 @@ fn failure(
 #[cfg(all(test, feature = "http"))]
 #[path = "reader_tests.rs"]
 mod tests;
-

@@ -250,7 +250,11 @@ async fn absent_content_type_falls_back_to_the_in_body_meta_charset() {
         ExecutionOutcome::Success(article) => article,
         ExecutionOutcome::Failure(error) => panic!("the meta charset must decode: {error}"),
     };
-    assert!(article.content.contains("REQUIRED-HTTP"), "{}", article.content);
+    assert!(
+        article.content.contains("REQUIRED-HTTP"),
+        "{}",
+        article.content
+    );
     assert!(article.content.contains("caf\u{e9}"), "{}", article.content);
     assert!(!article.content.contains('\u{fffd}'), "{}", article.content);
     // The acquire record names the encoding the meta declaration resolved to.
@@ -1051,7 +1055,10 @@ async fn declared_length_at_the_cap_passes_and_one_byte_over_is_rejected() {
 
     // One byte over the cap: refused at the declared-length gate, so no body
     // byte is ever read or charged.
-    let over = format!("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}x", body.len() + 1);
+    let over = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}x",
+        body.len() + 1
+    );
     let url = serve_once(over);
     let policy = UrlPolicy {
         allow_private_networks: true,
@@ -1267,7 +1274,9 @@ async fn a_single_request_succeeds_at_the_origin_request_budget_cap() {
     let execution = execute_with_policy(&url, policy).await;
     let article = match &execution.outcome {
         ExecutionOutcome::Success(article) => article,
-        ExecutionOutcome::Failure(error) => panic!("a budget of one must admit one request: {error}"),
+        ExecutionOutcome::Failure(error) => {
+            panic!("a budget of one must admit one request: {error}")
+        }
     };
     assert!(article.content.contains("REQUIRED-HTTP"));
     assert_eq!(requests.lock().unwrap().len(), 1);

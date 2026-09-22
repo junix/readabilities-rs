@@ -217,4 +217,3 @@ fn rel_tokens(value: &str) -> Vec<String> {
 #[cfg(all(test, feature = "charset"))]
 #[path = "page_tests.rs"]
 mod tests;
-

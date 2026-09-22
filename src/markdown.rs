@@ -258,4 +258,3 @@ fn collapse_newlines(markdown: &str) -> String {
 #[cfg(test)]
 #[path = "markdown_tests.rs"]
 mod tests;
-

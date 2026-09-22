@@ -97,4 +97,3 @@ fn contains_event_handler(html: &str) -> bool {
 #[cfg(test)]
 #[path = "sanitize_tests.rs"]
 mod tests;
-

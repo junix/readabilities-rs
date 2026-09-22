@@ -42,9 +42,8 @@ fn rejects_invalid_library_site_config_before_extraction() {
         remove_selectors: Vec::new(),
     };
 
-    let error =
-        Reader::with_options_and_site_configs(ExtractionOptions::default(), vec![config])
-            .expect_err("an invalid selector must reject the config");
+    let error = Reader::with_options_and_site_configs(ExtractionOptions::default(), vec![config])
+        .expect_err("an invalid selector must reject the config");
     assert!(
         matches!(
             &error,

@@ -182,4 +182,3 @@ fn validate_selector(site: &str, selector: &str) -> Result<(), SiteConfigError> 
 #[cfg(test)]
 #[path = "site_tests.rs"]
 mod tests;
-
