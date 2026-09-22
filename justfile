@@ -101,12 +101,17 @@ install:
     install_dir="${SYNC_BIN_DIR:-${HOME}/sync/${os_name}-${arch_name}-bin}"
     cargo build --release --locked --all-features
     mkdir -p "$install_dir"
-    cp target/release/readabilities-rs "$install_dir/readabilities-rs"
+    dest="$install_dir/readabilities-rs"
+    tmp="$(mktemp "${dest}.tmp.XXXXXX")"
+    trap 'rm -f "$tmp"' EXIT
+    cp target/release/readabilities-rs "$tmp"
+    chmod +x "$tmp"
     # A copied linker-signed Mach-O can be rejected by macOS execution policy
-    # at a provenance-tracked destination. Re-sign the installed bytes in place.
+    # at a provenance-tracked destination. Sign the staged copy before publication.
     if [[ "$os_name" == "macos" ]]; then
-      codesign --force --sign - "$install_dir/readabilities-rs"
+      codesign --force --sign - "$tmp"
     fi
+    mv -f "$tmp" "$dest"
     echo "Installed $install_dir/readabilities-rs"
 
 # Generate coverage
