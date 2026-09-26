@@ -6,8 +6,8 @@ use clap::{Parser, Subcommand, ValueEnum};
 #[cfg(feature = "http")]
 use readabilities_rs::{ExecutionOutcome, ReadRequest, UrlPolicy};
 use readabilities_rs::{
-    ExtractionMode, ExtractionOptions, OutputFormat, ReadError, Reader, SiteConfig, VERSION,
-    parse_site_configs,
+    ExtractionMode, ExtractionOptions, OutputFormat, ReadError, Reader, SiteConfig,
+    parse_site_configs, version,
 };
 use serde::Serialize;
 use url::Url;
@@ -15,7 +15,7 @@ use url::Url;
 #[derive(Debug, Parser)]
 #[command(
     name = "readabilities-rs",
-    version,
+    version = version(),
     about = "Extract readable content; clean HTML first, render Markdown later"
 )]
 struct Cli {
@@ -133,7 +133,7 @@ impl From<CliMode> for ExtractionMode {
 #[derive(Debug, Serialize)]
 struct DoctorReport {
     schema_version: u32,
-    version: &'static str,
+    version: String,
     core: bool,
     http: bool,
     ensemble: bool,
@@ -145,7 +145,7 @@ struct DoctorReport {
 struct VersionReport {
     schema_version: u32,
     name: &'static str,
-    version: &'static str,
+    version: String,
 }
 
 #[cfg(feature = "http")]
@@ -383,9 +383,10 @@ fn print_io_error(error: &io::Error) -> i32 {
 }
 
 fn print_doctor(json: bool) -> i32 {
+    let version = version();
     let report = DoctorReport {
         schema_version: readabilities_rs::SCHEMA_VERSION,
-        version: VERSION,
+        version: version.clone(),
         core: true,
         http: cfg!(feature = "http"),
         ensemble: cfg!(feature = "ensemble"),
@@ -398,7 +399,7 @@ fn print_doctor(json: bool) -> i32 {
             serde_json::to_string_pretty(&report).unwrap_or_default()
         );
     } else {
-        println!("readabilities-rs {VERSION}");
+        println!("readabilities-rs {version}");
         println!("core: ok");
         println!("http: {}", report.http);
         println!("ensemble: {}", report.ensemble);
@@ -413,11 +414,11 @@ fn print_version(json: bool) -> i32 {
         let report = VersionReport {
             schema_version: readabilities_rs::SCHEMA_VERSION,
             name: "readabilities-rs",
-            version: VERSION,
+            version: version(),
         };
         println!("{}", serde_json::to_string(&report).unwrap_or_default());
     } else {
-        println!("readabilities-rs {VERSION}");
+        println!("readabilities-rs {}", version());
     }
     0
 }

@@ -27,3 +27,13 @@ pub use site::{SiteConfig, SiteConfigError, parse_site_configs};
 
 /// Library version
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Version stamped with the git build sha (ADR-1168): `<semver>+g<sha>` when the
+/// justfile build provides `PM_BUILD_SHA` (`.dirty` appended for dirty trees),
+/// bare semver otherwise.
+pub fn version() -> String {
+    match option_env!("PM_BUILD_SHA") {
+        Some(sha) => format!("{VERSION}+{sha}"),
+        None => VERSION.to_string(),
+    }
+}

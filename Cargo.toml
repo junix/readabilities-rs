@@ -26,7 +26,7 @@ ensemble = []
 
 [dependencies]
 ammonia = "4.1.4"
-clap = { version = "4.6.0", features = ["derive"] }
+clap = { version = "4.6.0", features = ["derive", "string"] }
 ego-tree = "0.11.0"
 encoding_rs = { version = "0.8.35", optional = true }
 futures-util = { version = "0.3.31", optional = true }

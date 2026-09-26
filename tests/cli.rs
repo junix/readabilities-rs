@@ -21,17 +21,18 @@ fn help_version_and_doctor_are_public() {
         );
     }
     // The version handshake is machine-parsed downstream: pin it exactly.
+    // `version()` carries the git build stamp (ADR-1168) when present.
     let version = binary().args(["--version"]).output().unwrap();
     assert_eq!(
         String::from_utf8_lossy(&version.stdout),
-        format!("readabilities-rs {}\n", readabilities_rs::VERSION)
+        format!("readabilities-rs {}\n", readabilities_rs::version())
     );
     let version = binary().args(["version", "--json"]).output().unwrap();
     assert!(version.status.success());
     let version: serde_json::Value = serde_json::from_slice(&version.stdout).unwrap();
     assert_eq!(version["schema_version"], 1);
     assert_eq!(version["name"], "readabilities-rs");
-    assert_eq!(version["version"], readabilities_rs::VERSION);
+    assert_eq!(version["version"], readabilities_rs::version());
 
     let output = binary().args(["doctor", "--json"]).output().unwrap();
     assert!(output.status.success());
@@ -46,7 +47,7 @@ fn help_version_and_doctor_are_public() {
     assert!(human.status.success());
     let report = String::from_utf8_lossy(&human.stdout);
     for line in [
-        format!("readabilities-rs {}", readabilities_rs::VERSION).as_str(),
+        format!("readabilities-rs {}", readabilities_rs::version()).as_str(),
         "core: ok",
         "providers: false",
         "external processes: false",

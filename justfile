@@ -1,15 +1,18 @@
 # justfile for Rust project
 
+# Build stamp (ADR-1168): git short sha, with a .dirty suffix on dirty trees.
+stamp := `git rev-parse --short HEAD` + `(git diff --quiet && git diff --cached --quiet) >/dev/null 2>&1 || printf .dirty`
+
 default:
     @just --list
 
 # Build the crate
 build:
-    cargo build
+    PM_BUILD_SHA=g{{stamp}} cargo build
 
 # Build with release optimizations
 build-release:
-    cargo build --release
+    PM_BUILD_SHA=g{{stamp}} cargo build --release
 
 # Run tests
 test:
@@ -46,9 +49,9 @@ check-all:
     cargo test --locked
     cargo test --locked --no-default-features
     cargo test --locked --all-features
-    cargo build --locked
-    cargo build --locked --no-default-features
-    cargo build --locked --all-features
+    PM_BUILD_SHA=g{{stamp}} cargo build --locked
+    PM_BUILD_SHA=g{{stamp}} cargo build --locked --no-default-features
+    PM_BUILD_SHA=g{{stamp}} cargo build --locked --all-features
 
 # Clean build artifacts
 clean: clean-artifacts
@@ -74,7 +77,7 @@ install-tools:
 benchmark iterations="20":
     #!/usr/bin/env bash
     set -euo pipefail
-    cargo build --release --locked --example extraction_benchmark
+    PM_BUILD_SHA=g{{stamp}} cargo build --release --locked --example extraction_benchmark
     if [[ "$(uname -s)" == "Darwin" ]]; then
       /usr/bin/time -l ./target/release/examples/extraction_benchmark --iterations "{{ iterations }}"
     else
@@ -99,7 +102,7 @@ install:
       *) echo "unsupported architecture" >&2; exit 1 ;;
     esac
     install_dir="${SYNC_BIN_DIR:-${HOME}/sync/${os_name}-${arch_name}-bin}"
-    cargo build --release --locked --all-features
+    PM_BUILD_SHA=g{{stamp}} cargo build --release --locked --all-features
     mkdir -p "$install_dir"
     dest="$install_dir/readabilities-rs"
     tmp="$(mktemp "${dest}.tmp.XXXXXX")"
