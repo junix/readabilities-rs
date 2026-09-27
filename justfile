@@ -3,6 +3,9 @@
 # Build stamp (ADR-1168): git short sha, with a .dirty suffix on dirty trees.
 stamp := `git rev-parse --short HEAD` + `(git diff --quiet && git diff --cached --quiet) >/dev/null 2>&1 || printf .dirty`
 
+# Rust crate 本地 target 目录（per-crate；ADR-752 统一方案已废弃）
+target_dir := env("CARGO_TARGET_DIR", justfile_directory() / "target")
+
 default:
     @just --list
 
@@ -79,9 +82,9 @@ benchmark iterations="20":
     set -euo pipefail
     PM_BUILD_SHA=g{{stamp}} cargo build --release --locked --example extraction_benchmark
     if [[ "$(uname -s)" == "Darwin" ]]; then
-      /usr/bin/time -l ./target/release/examples/extraction_benchmark --iterations "{{ iterations }}"
+      /usr/bin/time -l "{{ target_dir }}/release/examples/extraction_benchmark" --iterations "{{ iterations }}"
     else
-      /usr/bin/time -v ./target/release/examples/extraction_benchmark --iterations "{{ iterations }}"
+      /usr/bin/time -v "{{ target_dir }}/release/examples/extraction_benchmark" --iterations "{{ iterations }}"
     fi
 
 bench iterations="20":
@@ -107,7 +110,7 @@ install:
     dest="$install_dir/readabilities-rs"
     tmp="$(mktemp "${dest}.tmp.XXXXXX")"
     trap 'rm -f "$tmp"' EXIT
-    cp target/release/readabilities-rs "$tmp"
+    cp "{{ target_dir }}/release/readabilities-rs" "$tmp"
     chmod +x "$tmp"
     # A copied linker-signed Mach-O can be rejected by macOS execution policy
     # at a provenance-tracked destination. Sign the staged copy before publication.
