@@ -1,5 +1,5 @@
 use std::net::{IpAddr, SocketAddr};
-use std::time::Instant;
+use std::time::{Duration, Instant, SystemTime};
 
 use futures_util::StreamExt;
 use reqwest::redirect::Policy;
@@ -144,7 +144,7 @@ async fn fetch_loop(
             continue;
         }
 
-        map_status(response.status())?;
+        map_status(response.status(), response.headers())?;
         let content_type = response
             .headers()
             .get(reqwest::header::CONTENT_TYPE)
@@ -394,7 +394,7 @@ fn origin(url: &Url) -> (String, Option<String>, Option<u16>) {
     )
 }
 
-fn map_status(status: StatusCode) -> Result<()> {
+fn map_status(status: StatusCode, headers: &reqwest::header::HeaderMap) -> Result<()> {
     if status.is_success() {
         return Ok(());
     }
@@ -404,13 +404,122 @@ fn map_status(status: StatusCode) -> Result<()> {
         500..=599 => (ErrorKind::OriginHttp, RetryAdvice::RetrySameBackend),
         _ => (ErrorKind::OriginHttp, RetryAdvice::Never),
     };
-    Err(ReadError::new(
+    let mut error = ReadError::new(
         kind,
         Stage::Acquire,
         Backend::Origin,
         format!("origin returned HTTP {status}"),
     )
-    .with_retry(retry))
+    .with_retry(retry);
+    // Timing is captured only while the origin leaves the retry decision
+    // open; absent and malformed headers simply leave the field unset, and
+    // extraction never sleeps on the advice.
+    if retry != RetryAdvice::Never {
+        let advised = headers
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| match parse_retry_after(value, SystemTime::now()) {
+                ParsedRetryAfter::Delay(secs) => Some(secs),
+                ParsedRetryAfter::Past => Some(0),
+                ParsedRetryAfter::Malformed => None,
+            });
+        if let Some(secs) = advised {
+            error = error.with_retry_after_secs(secs);
+        }
+    }
+    Err(error)
+}
+
+/// A parsed `Retry-After` header value (RFC 9110 section 10.2.3). The three
+/// cases callers must treat differently are kept distinct: a wait to honor,
+/// a date whose wait has already elapsed, and a value that is no delay at
+/// all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ParsedRetryAfter {
+    /// Delta-seconds, or the whole-second distance to a future HTTP date.
+    Delay(u64),
+    /// A syntactically valid HTTP date at or before the reference clock.
+    Past,
+    /// Neither a delta-seconds value nor a parseable HTTP date.
+    Malformed,
+}
+
+/// Parses a `Retry-After` header value: either delta-seconds or an HTTP
+/// date. `now` is the reference clock, injected so tests can pin it; the
+/// acquisition path passes the wall clock and never sleeps on the result.
+fn parse_retry_after(value: &str, now: SystemTime) -> ParsedRetryAfter {
+    let value = value.trim();
+    if !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit()) {
+        return value
+            .parse::<u64>()
+            .map_or(ParsedRetryAfter::Malformed, ParsedRetryAfter::Delay);
+    }
+    match parse_http_date(value).map(|at| at.duration_since(now)) {
+        Some(Ok(delay)) => ParsedRetryAfter::Delay(delay.as_secs()),
+        Some(Err(_)) => ParsedRetryAfter::Past,
+        None => ParsedRetryAfter::Malformed,
+    }
+}
+
+/// Parses the IMF-fixdate HTTP date format (`Sun, 06 Nov 1994 08:49:37 GMT`)
+/// into an absolute time. The day name is redundant and ignored; the zone
+/// must be GMT, the only zone RFC 9110 permits.
+fn parse_http_date(value: &str) -> Option<SystemTime> {
+    let mut fields = value.split_whitespace();
+    let _day_name = fields.next()?;
+    let day: u32 = fields.next()?.parse().ok()?;
+    let month = month_index(fields.next()?)?;
+    let year: i32 = fields.next()?.parse().ok()?;
+    let clock = fields.next()?;
+    let zone = fields.next()?;
+    if fields.next().is_some() || !zone.eq_ignore_ascii_case("gmt") {
+        return None;
+    }
+    if !(1..=31).contains(&day) || !(0..=9999).contains(&year) {
+        return None;
+    }
+    let mut clock_fields = clock.split(':');
+    let hour: u32 = clock_fields.next()?.parse().ok()?;
+    let minute: u32 = clock_fields.next()?.parse().ok()?;
+    let second: u32 = clock_fields.next()?.parse().ok()?;
+    if clock_fields.next().is_some() || hour > 23 || minute > 59 || second > 60 {
+        return None;
+    }
+    let days = days_from_civil(year, month, day);
+    let secs = days * 86_400 + i64::from(hour * 3_600 + minute * 60 + second);
+    u64::try_from(secs)
+        .ok()
+        .map(|secs| SystemTime::UNIX_EPOCH + Duration::from_secs(secs))
+}
+
+fn month_index(name: &str) -> Option<u32> {
+    Some(match name {
+        "Jan" => 1,
+        "Feb" => 2,
+        "Mar" => 3,
+        "Apr" => 4,
+        "May" => 5,
+        "Jun" => 6,
+        "Jul" => 7,
+        "Aug" => 8,
+        "Sep" => 9,
+        "Oct" => 10,
+        "Nov" => 11,
+        "Dec" => 12,
+        _ => return None,
+    })
+}
+
+/// Days since the Unix epoch for a proleptic Gregorian calendar date
+/// (Howard Hinnant's `days_from_civil` algorithm).
+fn days_from_civil(year: i32, month: u32, day: u32) -> i64 {
+    let y = i64::from(if month <= 2 { year - 1 } else { year });
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let month = i64::from(month);
+    let doy = (153 * (if month > 2 { month - 3 } else { month + 9 }) + 2) / 5 + i64::from(day) - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
 }
 
 #[cfg(test)]

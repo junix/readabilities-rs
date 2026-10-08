@@ -39,3 +39,26 @@ fn ordinary_messages_are_cut_at_exactly_five_hundred_chars() {
     // At exactly the cap nothing is dropped.
     assert_eq!(message_for(&"y".repeat(500)), "y".repeat(500));
 }
+
+#[test]
+fn retry_after_secs_serializes_optionally_and_stays_backward_compatible() {
+    let error = ReadError::new(
+        ErrorKind::RateLimit,
+        Stage::Acquire,
+        Backend::Origin,
+        "origin returned HTTP 429",
+    )
+    .with_retry(RetryAdvice::RetryAfter);
+
+    // Without advice the key is absent, so payloads keep their old shape.
+    let plain = serde_json::to_value(&error).unwrap();
+    assert!(plain.get("retry_after_secs").is_none());
+    let restored: ReadError = serde_json::from_value(plain).unwrap();
+    assert_eq!(restored.retry_after_secs, None);
+
+    // With advice the value round-trips.
+    let advised = serde_json::to_value(error.with_retry_after_secs(120)).unwrap();
+    assert_eq!(advised["retry_after_secs"], 120);
+    let restored: ReadError = serde_json::from_value(advised).unwrap();
+    assert_eq!(restored.retry_after_secs, Some(120));
+}

@@ -699,6 +699,60 @@ async fn http_status_failures_map_to_typed_error_kinds_and_retry_advice() {
 }
 
 #[tokio::test]
+async fn retry_after_header_timing_is_preserved_in_origin_errors() {
+    for (raw, kind, retry, advised) in [
+        // Delta-seconds on a rate-limited status are carried verbatim.
+        (
+            "HTTP/1.1 429 Too Many Requests\r\nRetry-After: 120\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            ErrorKind::RateLimit,
+            RetryAdvice::RetryAfter,
+            Some(120_u64),
+        ),
+        // 5xx responses advise the same backend and honor the header too.
+        (
+            "HTTP/1.1 503 Service Unavailable\r\nRetry-After: 30\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            ErrorKind::OriginHttp,
+            RetryAdvice::RetrySameBackend,
+            Some(30),
+        ),
+        // A valid HTTP date already in the past: the wait has elapsed, so
+        // the delay is captured as zero rather than dropped.
+        (
+            "HTTP/1.1 503 Service Unavailable\r\nRetry-After: Sun, 06 Nov 1994 08:49:37 GMT\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            ErrorKind::OriginHttp,
+            RetryAdvice::RetrySameBackend,
+            Some(0),
+        ),
+        // Malformed advice never disturbs the typed status mapping.
+        (
+            "HTTP/1.1 429 Too Many Requests\r\nRetry-After: soon\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            ErrorKind::RateLimit,
+            RetryAdvice::RetryAfter,
+            None,
+        ),
+        // Terminal advice keeps ignoring the header entirely.
+        (
+            "HTTP/1.1 404 Not Found\r\nRetry-After: 10\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            ErrorKind::OriginHttp,
+            RetryAdvice::Never,
+            None,
+        ),
+    ] {
+        let (url, requests) = serve_sequence(vec![raw.as_bytes().to_vec()]);
+        let policy = UrlPolicy {
+            allow_private_networks: true,
+            ..UrlPolicy::default()
+        };
+
+        let error = Reader::new().read_url(&url, &policy).await.unwrap_err();
+        assert_eq!(error.kind, kind, "{raw}");
+        assert_eq!(error.retry, retry, "{raw}");
+        assert_eq!(error.retry_after_secs, advised, "{raw}");
+        assert_eq!(requests.lock().unwrap().len(), 1, "{raw}");
+    }
+}
+
+#[tokio::test]
 async fn deadline_exhaustion_is_a_timeout_advising_a_bigger_budget() {
     let body = "<html><body><article><p>REQUIRED-HTTP: never delivered in time.</p></article></body></html>";
     let response = format!(

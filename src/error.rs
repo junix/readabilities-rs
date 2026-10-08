@@ -42,6 +42,14 @@ pub struct ReadError {
     pub backend: Backend,
     pub message: String,
     pub retry: RetryAdvice,
+    /// Server-advised wait in seconds parsed from a `Retry-After` response
+    /// header, captured only when the origin sent a valid delta-seconds or
+    /// HTTP-date value on a status whose retry advice leaves the retry
+    /// decision open. Absent and malformed headers leave it `None`; a date
+    /// already in the past is captured as zero. Optional so errors serialized
+    /// by older versions keep deserializing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_after_secs: Option<u64>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub completed_attempts: Vec<AttemptRecord>,
 }
@@ -59,12 +67,18 @@ impl ReadError {
             backend,
             message: redact(&message.into()),
             retry: RetryAdvice::Never,
+            retry_after_secs: None,
             completed_attempts: Vec::new(),
         }
     }
 
     pub(crate) fn with_retry(mut self, retry: RetryAdvice) -> Self {
         self.retry = retry;
+        self
+    }
+
+    pub(crate) fn with_retry_after_secs(mut self, retry_after_secs: u64) -> Self {
+        self.retry_after_secs = Some(retry_after_secs);
         self
     }
 
